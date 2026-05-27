@@ -13,7 +13,7 @@ constexpr char kShaderSrc[] = R"HLSL(
 cbuffer TonemapCB : register(b0) {
     float  uExposure;       // pre-scale (= sdrWhiteScale * 2^EV)
     float  uSaturation;
-    int    uCurve;          // 0=Linear 1=Reinhard 2=ACES 3=Hable 4=AgX 5=Neutral 6=PreserveSdr
+    int    uCurve;          // 0=Linear 1=Reinhard 2=ACES 3=Hable 4=AgX 5=Neutral 6=PreserveSdr 7=BT2390
     int    uIsHdr;          // 1: source is FP16 linear scRGB; 0: source is sRGB BGRA
     int    uOutputGamma;    // 0=sRGB 1=Gamma22 2=Linear
     int    uPassthrough;    // 1: skip curve+sat+exposure (HDR comparison view)
@@ -29,7 +29,10 @@ cbuffer TonemapCB : register(b0) {
     int    uLinearOutput;   // 1: skip output gamma + clamp (FP16 RT)
     float  uLocalStrength;  // 0..1, blend toward local tonemap
     float  uLocalLod;       // mip level to sample for the local-average blur
-    float  _pad0[2];
+    float  uKneePoint;      // 0..1, PreserveSdr/BT2390 knee start
+    float  uHighlightDesat; // 0..1, Hunt-effect highlight desaturation
+    float  uSourcePeakNits; // BT2390 source peak luminance in nits
+    float  _pad0[3];        // pad to a 16-byte boundary for D3D11
 };
 
 Texture2D   gSource : register(t0);
@@ -120,18 +123,93 @@ float3 ApplyNeutral(float3 c) {
     return saturate(c);
 }
 
-// PreserveSdr: identity below kKnee, hue-preserving soft knee that asymptotes
-// to 1.0 above. Sacrifices a sliver of SDR brightness above kKnee so HDR
-// highlights compress smoothly into [0,1] instead of clipping.
+// PreserveSdr: luminance-only hue-preserving soft knee. Identity below knee;
+// above it the luminance asymptotes to 1.0 while RGB is rescaled by the
+// same ratio so chromaticity is preserved exactly.
 float3 ApplyPreserveSdr(float3 c) {
-    float peak = max(c.r, max(c.g, c.b));
-    if (peak <= 0.0) return c;
-    const float kKnee = 0.9;
-    if (peak <= kKnee) return saturate(c);
-    float over = peak - kKnee;
-    float range = 1.0 - kKnee;
-    float newPeak = kKnee + over * range / (over + range);
-    return saturate(c * (newPeak / peak));
+    float Y = dot(c, float3(0.2126, 0.7152, 0.0722));
+    if (Y <= 0.0) return max(c, 0.0);
+    float knee = clamp(uKneePoint, 0.05, 0.95);
+    float Ymapped;
+    if (Y <= knee) {
+        Ymapped = Y;
+    } else {
+        float over = Y - knee;
+        float range = 1.0 - knee;
+        Ymapped = knee + over * range / (over + range);
+    }
+    return c * (Ymapped / Y);
+}
+
+// PQ OETF / EOTF (SMPTE ST.2084). PqOetf maps linear-light [0, 1] -> PQ
+// encoded [0, 1] where the linear-light unit is normalized to 10000 nits.
+float PqOetf(float L) {
+    const float m1 = 0.1593017578125;
+    const float m2 = 78.84375;
+    const float c1 = 0.8359375;
+    const float c2 = 18.8515625;
+    const float c3 = 18.6875;
+    L = max(L, 0.0);
+    float Lm1 = pow(L, m1);
+    return pow((c1 + c2 * Lm1) / (1.0 + c3 * Lm1), m2);
+}
+float PqEotf(float E) {
+    const float m1 = 0.1593017578125;
+    const float m2 = 78.84375;
+    const float c1 = 0.8359375;
+    const float c2 = 18.8515625;
+    const float c3 = 18.6875;
+    E = saturate(E);
+    float Em2 = pow(E, 1.0 / m2);
+    float num = max(Em2 - c1, 0.0);
+    float den = max(c2 - c3 * Em2, 1e-10);
+    return pow(num / den, 1.0 / m1);
+}
+float Bt2390Knee(float E, float ks, float Lmax) {
+    if (E < ks) return E;
+    float t = (E - ks) / max(1.0 - ks, 1e-6);
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return (2.0 * t3 - 3.0 * t2 + 1.0) * ks
+         + (t3 - 2.0 * t2 + t) * (1.0 - ks)
+         + (-2.0 * t3 + 3.0 * t2) * Lmax;
+}
+
+// ITU-R BT.2390 EETF in PQ space, applied to luminance with RGB rescaled by
+// the resulting ratio so hue is preserved. Maps [0, sourcePeakNits] linearly
+// onto SDR-display peak (treated as scRGB 1.0 = 80 nits target).
+float3 ApplyBt2390(float3 c) {
+    float Y_scrgb = dot(c, float3(0.2126, 0.7152, 0.0722));
+    if (Y_scrgb <= 0.0) return max(c, 0.0);
+    float Y_nits = min(Y_scrgb * 80.0, 10000.0);
+
+    float srcPeak = min(uSourcePeakNits, 10000.0);
+    const float tgtPeakNits = 80.0;
+    float pqSrcPeak = max(PqOetf(srcPeak / 10000.0), 1e-6);
+    float pqTgtPeak = PqOetf(tgtPeakNits / 10000.0);
+    float maxLum = min(pqTgtPeak / pqSrcPeak, 1.0);
+
+    float E1 = PqOetf(Y_nits / 10000.0) / pqSrcPeak;
+    float E2 = saturate(E1);
+    float ks = max(0.0, 1.5 * maxLum - 0.5);
+    float E3 = Bt2390Knee(E2, ks, maxLum);
+
+    float Y_out_nits = PqEotf(E3 * pqSrcPeak) * 10000.0;
+    float Y_out_scrgb = Y_out_nits / 80.0;
+    return c * (Y_out_scrgb / max(Y_scrgb, 1e-6));
+}
+
+// Hunt-effect highlight desaturation. Smoothstep ramp from knee to 1.0;
+// brightest pixels fade toward grayscale so the sun reads as white rather
+// than a saturated chromatic blob. Applied as post-step for PreserveSdr/
+// BT2390 only.
+float3 ApplyHighlightDesat(float3 c) {
+    float Y = dot(c, float3(0.2126, 0.7152, 0.0722));
+    float knee = clamp(uKneePoint, 0.05, 0.95);
+    if (Y <= knee) return c;
+    float t = saturate((Y - knee) / max(1.0 - knee, 1e-6));
+    float w = uHighlightDesat * (t * t * (3.0 - 2.0 * t));
+    return lerp(c, float3(Y, Y, Y), w);
 }
 
 float3 ApplyCurve(float3 c) {
@@ -140,7 +218,8 @@ float3 ApplyCurve(float3 c) {
     if (uCurve == 3) return ApplyHable(c);
     if (uCurve == 4) return ApplyAgX(c);
     if (uCurve == 5) return ApplyNeutral(c);
-    if (uCurve == 6) return ApplyPreserveSdr(c);
+    if (uCurve == 6) return saturate(ApplyHighlightDesat(ApplyPreserveSdr(c)));
+    if (uCurve == 7) return saturate(ApplyHighlightDesat(ApplyBt2390(c)));
     return saturate(c);
 }
 
@@ -266,8 +345,13 @@ struct CBLayout {
     int linearOutput;
     float localStrength;
     float localLod;
-    float _pad0[2];
+    float kneePoint;
+    float highlightDesat;
+    float sourcePeakNits;
+    float _pad0[3];
 };
+static_assert(sizeof(CBLayout) % 16 == 0,
+              "D3D11 constant buffers must be a multiple of 16 bytes");
 
 ComPtr<ID3DBlob> Compile(const char* entry, const char* target) {
     ComPtr<ID3DBlob> blob, err;
@@ -437,6 +521,9 @@ void ShaderTonemap::RenderSdr(const TonemapParams& params) {
         cb.linearOutput = 0;  // SDR RT is always 8-bit sRGB-encoded
         cb.localStrength = std::clamp(params.localStrength, 0.0f, 1.0f);
         cb.localLod = float(sourceMipCount_ > 1 ? sourceMipCount_ - 1 : 0);
+        cb.kneePoint = params.kneePoint;
+        cb.highlightDesat = params.highlightDesat;
+        cb.sourcePeakNits = params.sourcePeakNits;
         std::memcpy(m.pData, &cb, sizeof(cb));
         context_->Unmap(cb_.Get(), 0);
     }
@@ -468,6 +555,9 @@ void ShaderTonemap::RenderHdrPassthrough() {
         cb.linearOutput = linearHdrOutput_ ? 1 : 0;
         cb.localStrength = 0.0f;  // passthrough bypasses the curve entirely
         cb.localLod = 0.0f;
+        cb.kneePoint = 0.75f;
+        cb.highlightDesat = 0.0f;
+        cb.sourcePeakNits = 1000.0f;
         std::memcpy(m.pData, &cb, sizeof(cb));
         context_->Unmap(cb_.Get(), 0);
     }

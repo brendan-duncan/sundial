@@ -139,34 +139,151 @@ float ApplyCurveScalar(float x, TonemapCurve curve) {
     }
 }
 
-// PreserveSdr: hue-preserving soft knee. Mirrors the HLSL implementation in
-// ShaderTonemap.cpp - keep in sync.
-void ApplyPreserveSdr(float& r, float& g, float& b) {
-    float peak = std::max({r, g, b});
-    if (peak <= 0.0f) return;
-    constexpr float kKnee = 0.9f;
-    if (peak <= kKnee) {
-        r = std::clamp(r, 0.0f, 1.0f);
-        g = std::clamp(g, 0.0f, 1.0f);
-        b = std::clamp(b, 0.0f, 1.0f);
+// Luminance-only hue-preserving soft knee. Operates on Y = dot(c, Rec.709
+// weights) rather than max(r,g,b), so the chromaticity stays exactly fixed
+// while only the brightness is compressed. Mirrors the HLSL version in
+// ShaderTonemap.cpp - keep both in sync.
+void ApplyPreserveSdr(float& r, float& g, float& b, float knee) {
+    const float Y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    if (Y <= 0.0f) {
+        r = std::max(0.0f, r);
+        g = std::max(0.0f, g);
+        b = std::max(0.0f, b);
         return;
     }
-    const float over = peak - kKnee;
-    const float range = 1.0f - kKnee;
-    const float newPeak = kKnee + over * range / (over + range);
-    const float s = newPeak / peak;
-    r = std::clamp(r * s, 0.0f, 1.0f);
-    g = std::clamp(g * s, 0.0f, 1.0f);
-    b = std::clamp(b * s, 0.0f, 1.0f);
+    knee = std::clamp(knee, 0.05f, 0.95f);
+    float Ymapped;
+    if (Y <= knee) {
+        Ymapped = Y;
+    } else {
+        const float over = Y - knee;
+        const float range = 1.0f - knee;
+        Ymapped = knee + over * range / (over + range);
+    }
+    const float s = Ymapped / Y;
+    r *= s; g *= s; b *= s;
 }
 
-void ApplyCurveTriplet(float& r, float& g, float& b, TonemapCurve curve) {
+// ITU-R BT.2390 EETF (Electro-Optical Transfer Function) in PQ space. This is
+// the reference HDR-to-SDR tone-mapping curve Microsoft and the broadcast
+// industry use. We operate on luminance only and scale RGB by the resulting
+// ratio so hue is preserved; per-channel BT.2390 would clip wide-gamut
+// highlights to weird hues. Mirror in ShaderTonemap.cpp.
+//
+// PQ encoding: maps linear nits [0, 10000] -> normalized [0, 1] via SMPTE
+// ST.2084. scRGB convention: 1.0 = 80 nits, so L_pq = scRGB * 80 / 10000.
+float PqOetf(float L) {
+    // L in [0, 1] where 1 = 10000 nits.
+    constexpr float m1 = 0.1593017578125f;
+    constexpr float m2 = 78.84375f;
+    constexpr float c1 = 0.8359375f;
+    constexpr float c2 = 18.8515625f;
+    constexpr float c3 = 18.6875f;
+    L = std::max(0.0f, L);
+    const float Lm1 = std::pow(L, m1);
+    return std::pow((c1 + c2 * Lm1) / (1.0f + c3 * Lm1), m2);
+}
+
+float PqEotf(float E) {
+    constexpr float m1 = 0.1593017578125f;
+    constexpr float m2 = 78.84375f;
+    constexpr float c1 = 0.8359375f;
+    constexpr float c2 = 18.8515625f;
+    constexpr float c3 = 18.6875f;
+    E = std::clamp(E, 0.0f, 1.0f);
+    const float Em2 = std::pow(E, 1.0f / m2);
+    const float num = std::max(Em2 - c1, 0.0f);
+    const float den = c2 - c3 * Em2;
+    return std::pow(num / std::max(den, 1e-10f), 1.0f / m1);
+}
+
+// BT.2390 Hermite knee on PQ-encoded values. ks is the knee start, Lmax is
+// the PQ value of the target peak (i.e. PQ(1.0) for an SDR display normalized
+// to its own peak).
+float Bt2390Knee(float E, float ks, float Lmax) {
+    if (E < ks) return E;
+    const float t = (E - ks) / std::max(1.0f - ks, 1e-6f);
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    return (2.0f * t3 - 3.0f * t2 + 1.0f) * ks
+         + (t3 - 2.0f * t2 + t) * (1.0f - ks)
+         + (-2.0f * t3 + 3.0f * t2) * Lmax;
+}
+
+void ApplyBt2390(float& r, float& g, float& b,
+                 float sourcePeakNits, float targetPeakNits) {
+    // scRGB linear -> nits; cap at 10000 (PQ ceiling).
+    const float Y_scrgb = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    if (Y_scrgb <= 0.0f) {
+        r = std::max(0.0f, r); g = std::max(0.0f, g); b = std::max(0.0f, b);
+        return;
+    }
+    const float Y_nits = std::min(Y_scrgb * 80.0f, 10000.0f);
+
+    // Normalize the source range so the curve always operates in [0, 1]:
+    // E2 = PQ(L) / PQ(sourcePeak). At E2 = 1 the input is at source peak.
+    const float pqSrcPeak = PqOetf(std::min(sourcePeakNits, 10000.0f) / 10000.0f);
+    const float pqTgtPeak = PqOetf(std::min(targetPeakNits, 10000.0f) / 10000.0f);
+    const float maxLum = std::min(pqTgtPeak / std::max(pqSrcPeak, 1e-6f), 1.0f);
+
+    const float E1 = PqOetf(Y_nits / 10000.0f) / std::max(pqSrcPeak, 1e-6f);
+    const float E2 = std::clamp(E1, 0.0f, 1.0f);
+
+    // Knee starts at the spec-recommended 1.5*Lw - 0.5 (clamped to >= 0).
+    const float ks = std::max(0.0f, 1.5f * maxLum - 0.5f);
+    const float E3 = Bt2390Knee(E2, ks, maxLum);
+
+    // Back to linear nits, then back to scRGB.
+    const float Y_out_pq = E3 * pqSrcPeak;
+    const float Y_out_nits = PqEotf(Y_out_pq) * 10000.0f;
+    const float Y_out_scrgb = Y_out_nits / 80.0f;
+
+    // Apply the same ratio to RGB so hue is preserved.
+    const float s = Y_out_scrgb / std::max(Y_scrgb, 1e-6f);
+    r *= s; g *= s; b *= s;
+}
+
+// Hunt-effect highlight desaturation: lerp bright colors toward grayscale so
+// the sun reads as white-yellow instead of saturated orange. Strength ramps
+// up smoothly with luminance above the knee. Applied as a post-curve step
+// for PreserveSdr and BT2390; other curves do their own desat (Neutral) or
+// don't need it (clipping curves desaturate by virtue of clipping channels).
+void ApplyHighlightDesat(float& r, float& g, float& b,
+                         float knee, float strength) {
+    knee = std::clamp(knee, 0.05f, 0.95f);
+    strength = std::clamp(strength, 0.0f, 1.0f);
+    const float Y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    if (Y <= knee) return;
+    const float t = std::clamp((Y - knee) / std::max(1.0f - knee, 1e-6f),
+                               0.0f, 1.0f);
+    const float w = strength * (t * t * (3.0f - 2.0f * t));  // smoothstep
+    r = r + (Y - r) * w;
+    g = g + (Y - g) * w;
+    b = b + (Y - b) * w;
+}
+
+void ApplyCurveTriplet(float& r, float& g, float& b, TonemapCurve curve,
+                       float kneePoint, float highlightDesat,
+                       float sourcePeakNits) {
     if (curve == TonemapCurve::AgX) {
         ApplyAgX(r, g, b);
     } else if (curve == TonemapCurve::Neutral) {
         ApplyNeutral(r, g, b);
     } else if (curve == TonemapCurve::PreserveSdr) {
-        ApplyPreserveSdr(r, g, b);
+        ApplyPreserveSdr(r, g, b, kneePoint);
+        ApplyHighlightDesat(r, g, b, kneePoint, highlightDesat);
+        r = std::clamp(r, 0.0f, 1.0f);
+        g = std::clamp(g, 0.0f, 1.0f);
+        b = std::clamp(b, 0.0f, 1.0f);
+    } else if (curve == TonemapCurve::BT2390) {
+        // For BT.2390 the source-peak scale already lives in scRGB units; we
+        // pass 80 nits as the target (= scRGB 1.0) so the curve maps anything
+        // up to sourcePeakNits into [0, 1].
+        ApplyBt2390(r, g, b, sourcePeakNits, 80.0f);
+        ApplyHighlightDesat(r, g, b, kneePoint, highlightDesat);
+        r = std::clamp(r, 0.0f, 1.0f);
+        g = std::clamp(g, 0.0f, 1.0f);
+        b = std::clamp(b, 0.0f, 1.0f);
     } else {
         r = ApplyCurveScalar(r, curve);
         g = ApplyCurveScalar(g, curve);
@@ -325,7 +442,9 @@ std::vector<uint8_t> TonemapToBgra8(const Frame& hdr,
         float avgB = float(sumB / std::max<size_t>(total, 1));
         preCurve(avgR, avgG, avgB);
         float curveR = avgR, curveG = avgG, curveB = avgB;
-        ApplyCurveTriplet(curveR, curveG, curveB, params.curve);
+        ApplyCurveTriplet(curveR, curveG, curveB, params.curve,
+                          params.kneePoint, params.highlightDesat,
+                          params.sourcePeakNits);
         ratio_r = curveR / std::max(avgR, 1e-5f);
         ratio_g = curveG / std::max(avgG, 1e-5f);
         ratio_b = curveB / std::max(avgB, 1e-5f);
@@ -365,12 +484,15 @@ std::vector<uint8_t> TonemapToBgra8(const Frame& hdr,
                 const float g_local = std::clamp(g * ratio_g, 0.0f, 1.0f);
                 const float b_local = std::clamp(b * ratio_b, 0.0f, 1.0f);
                 float r_global = r, g_global = g, b_global = b;
-                ApplyCurveTriplet(r_global, g_global, b_global, params.curve);
+                ApplyCurveTriplet(r_global, g_global, b_global, params.curve,
+                                  params.kneePoint, params.highlightDesat,
+                                  params.sourcePeakNits);
                 r = r_global + (r_local - r_global) * localStrength;
                 g = g_global + (g_local - g_global) * localStrength;
                 b = b_global + (b_local - b_global) * localStrength;
             } else {
-                ApplyCurveTriplet(r, g, b, params.curve);
+                ApplyCurveTriplet(r, g, b, params.curve, params.kneePoint,
+                                  params.highlightDesat, params.sourcePeakNits);
             }
 
             postCurve(r, g, b);

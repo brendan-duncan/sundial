@@ -5,20 +5,85 @@ Windows HDR-aware screen capture utility with support for HDR displays, includin
 ![Sundial HDR Editor](sundial_edit_side_by_side.png)
 
 ## Usage
-Sundial.exe runs in the background and docks itself to the Windows tasks tray.
+
+Sundial runs in the background and docks itself to the Windows tray.
+
 ![Sundial Tray Icon](sundial_taskbar.png)
 
-Invoke Sundial by clicking on the tray icon, or using the system level hotkey: **Win+Shift+X**
-
-The Sundial toolbar will appear near the top of the monitor and the screen will darken. 
+Open the toolbar by clicking the tray icon or pressing **Win+Shift+X**. The
+screen darkens and the toolbar appears at the top of the primary monitor.
 
 ![Sundial Toolbar](sundial_toolbar.png)
 
-* **Fullscreen**: capture the entire screen. To capture an area of the screen, just drag a rectangle on the screen for the area that you want to capture.
-* **Edit Image...**: Select a JXR image to edit.
-* **Settings**:
-  * **Edit on Capture**: when set it will open the editor after a capture. Unchecked it will save the screenshot with the last used edit settings.
-  * **Save HDR Image**: When set it will save the HDR JXR image, along with the PNG. When unset, it will only save the PNG.
+### Capturing
+
+* **Full Screen** — capture the entire primary monitor.
+* **Area** — drag a rectangle on the darkened screen to capture just that
+  region. **Esc** or right-click cancels.
+* **Edit Image…** — re-open an existing `.jxr` (or `.png`/`.jpg`) and
+  re-tone it through the same editor. You can also right-click any `.jxr`
+  in Explorer and pick **Open with Sundial**.
+
+### Settings (toolbar gear menu)
+
+* **Edit on Capture** — open the editor after each capture. Off saves
+  directly using the most recent tonemap settings.
+* **Save HDR Image (JXR)** — write the original FP16 scRGB capture as a
+  `.jxr` alongside the SDR `.png`, so you can re-tone later without
+  recapturing.
+* **Copy to Clipboard** — copy the resulting SDR image to the clipboard
+  after each save.
+
+### Editor
+
+When **Edit on Capture** is on, captures open in the editor.
+
+* **Curve** — tone-mapping algorithm. Default is **BT.2390 (reference)**,
+  the ITU-R curve used by Windows Game Bar. **Preserve SDR**, **ACES**,
+  **Hable**, **AgX**, and **Khronos Neutral** are also available.
+* **SDR white (nits)** — where scRGB 1.0 sits on the SDR output. Seeded
+  from the Windows HDR > "SDR content brightness" setting on every
+  capture. **Auto** sets it from the 99th-percentile luminance of the
+  current capture.
+* **Source peak (nits)** — BT.2390's upper bound for compression. Seeded
+  from the display's reported MaxLuminance. **Auto** re-reads it.
+* **Exposure**, **Knee point**, **Highlight desat**, **Highlight rolloff**,
+  **Black point lift** — fine-tune the curve.
+* **Color** — saturation, temperature/tint, per-channel gain, gamut
+  compression.
+* **Detail** — unsharp-mask sharpen and a local-tonemap blend (preserves
+  dark UI in front of bright HDR content).
+* **Crop** — drag on the preview, or use the X/Y/W/H sliders.
+* **Resize** — width/height with optional aspect lock.
+* **Presets** — save/load the full slider set under any name; persisted
+  to `%APPDATA%\Sundial\presets\`.
+* **View** — SDR only (hold the SDR button to peek at the unmapped HDR),
+  Split (drag the divider), or Side-by-side.
+* **Save** (Ctrl+S), **Save As…** (Ctrl+Shift+X), **Copy** (clipboard),
+  **Cancel** (Ctrl+X).
+
+### Hotkeys
+
+| Shortcut | Action |
+|---|---|
+| **Win+Shift+X** | Show the Sundial toolbar |
+| **Esc** / right-click | Cancel area selection |
+| **Ctrl+S** | Editor: Save |
+| **Ctrl+Shift+X** | Editor: Save As… |
+| **Ctrl+X** | Editor: Cancel |
+
+### Output
+
+Captures land in `Pictures\Sundial\` (which OneDrive may redirect). Each
+HDR capture produces two files with the same stem:
+
+* `sundial_YYYYMMDD_HHMMSS.png` — tonemapped SDR result.
+* `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB, kept when **Save
+  HDR Image (JXR)** is on so you can re-tone via **Edit Image…** without
+  recapturing.
+
+The toast notification in the bottom-right opens the file in Explorer when
+clicked.
 
 ## Build and run
 

@@ -12,7 +12,8 @@ enum class TonemapCurve : int {
     Hable = 3,
     AgX = 4,
     Neutral = 5,        // Khronos PBR Neutral
-    PreserveSdr = 6,    // identity below ~0.9, soft knee to 1.0 for HDR highlights
+    PreserveSdr = 6,    // luminance-based soft knee with highlight desaturation
+    BT2390 = 7,         // ITU-R BT.2390 EETF (PQ-space reference HDR->SDR curve)
 };
 
 // What gamma encoding to apply on the way out. sRGB is correct for PNGs that
@@ -25,15 +26,31 @@ enum class OutputGamma : int {
 };
 
 struct TonemapParams {
-    float sdrWhiteNits = 80.0f;     // where scRGB "1.0" should sit on the SDR output
+    // Where scRGB "1.0" should sit on the SDR output. The base default is 80
+    // (scRGB convention: 1.0 = 80 nits, no rescaling - safe for SDR
+    // captures). For HDR captures, SeedTonemapForFrame() in main.cpp seeds a
+    // display-appropriate value (typically 200-400 nits) before the editor
+    // opens.
+    float sdrWhiteNits = 80.0f;
     float exposureEV = 0.0f;         // pre-tonemap exposure in stops
-    TonemapCurve curve = TonemapCurve::Neutral;
+    // Default BT2390: ITU-R reference HDR-to-SDR curve used by Windows Game
+    // Bar / broadcasters. Operates in PQ space on luminance with RGB
+    // rescaled by the resulting ratio, so hue is preserved exactly and the
+    // compression curve is parameterized by source/target peak luminance
+    // (the right knobs for matching the OS conversion).
+    TonemapCurve curve = TonemapCurve::BT2390;
     float saturation = 1.0f;         // 1.0 = unchanged, 0 = grayscale
     float blackPointLift = 0.0f;     // post-curve shadow lift, 0..1
-    float highlightRolloff = 0.0f;   // pre-curve highlight knee, 0..1
+    // Pre-curve highlight knee. Stays at 0 for SDR sources so they pass
+    // through unchanged; SeedTonemapForFrame bumps it to ~0.4 for HDR
+    // captures so the sun's bright halo doesn't bleed into the sky.
+    float highlightRolloff = 0.0f;
     float temperature = 0.0f;        // -1..1, negative = cool / positive = warm
     float tint = 0.0f;               // -1..1, negative = green / positive = magenta
-    float gamutCompress = 0.0f;      // 0..1, pull out-of-sRGB colors toward gray
+    // Pull wide-gamut HDR colors that fall outside [0,1] toward gray instead
+    // of clipping per-channel. 0 for SDR sources; SeedTonemapForFrame raises
+    // it for HDR captures.
+    float gamutCompress = 0.0f;
     float sharpen = 0.0f;            // 0..1, unsharp-mask amount on source
     float rGain = 1.0f;              // per-channel multiplier in scene-linear space
     float gGain = 1.0f;
@@ -44,6 +61,23 @@ struct TonemapParams {
     // and uses that compression ratio on the full-res pixel, so dark UI in
     // front of bright HDR content keeps its dynamic range.
     float localStrength = 0.0f;
+    // PreserveSdr / BT2390 knee. Below this normalized brightness the input
+    // passes through unchanged; above it the curve compresses toward 1.0.
+    // 0.75 matches Microsoft's HDR-to-SDR conversion behavior; lower values
+    // give the curve more compression range at the cost of slightly darker
+    // mid-tones.
+    float kneePoint = 0.75f;
+    // Highlight desaturation toward white (Hunt-effect compensation). The
+    // brightest pixels lerp from chromatic toward grayscale so the sun looks
+    // white-yellow instead of saturated orange. Applied by PreserveSdr and
+    // BT2390; other curves ignore it. 0.5 default is moderate; 1.0 forces
+    // peak highlights all the way to white.
+    float highlightDesat = 0.5f;
+    // Reference peak luminance for the BT.2390 curve. The display's reported
+    // MaxLuminance (from DXGI_OUTPUT_DESC1) is the natural seed; for static
+    // images authored to 1000 nits we cap here so the curve has a reasonable
+    // source range to compress from.
+    float sourcePeakNits = 1000.0f;
 };
 
 struct AppSettings {

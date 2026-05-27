@@ -3,11 +3,13 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi1_6.h>
+#include <wingdi.h>
 #include <wrl/client.h>
 
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -18,6 +20,59 @@ void ThrowIfFailed(HRESULT hr, const char* what) {
     if (FAILED(hr)) {
         throw std::system_error(hr, std::system_category(), what);
     }
+}
+
+// Query Windows for the SDR white level of the monitor matching `gdiName`
+// (a GDI device name like "\\.\DISPLAY1"). Returns 0 on failure so the
+// caller can fall back to the 80-nit scRGB default.
+//
+// Windows lets the user set this via Settings > Display > HDR > SDR content
+// brightness. The reference white level is reported as a multiplier where
+// 1000 == 80 nits, so nits = value * 80 / 1000.
+float QuerySdrWhiteLevelNits(const wchar_t* gdiName) {
+    UINT32 pathCount = 0, modeCount = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount,
+                                    &modeCount) != ERROR_SUCCESS) {
+        return 0.0f;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(),
+                           &modeCount, modes.data(),
+                           nullptr) != ERROR_SUCCESS) {
+        return 0.0f;
+    }
+
+    for (UINT32 i = 0; i < pathCount; ++i) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME src{};
+        src.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        src.header.size = sizeof(src);
+        src.header.adapterId = paths[i].sourceInfo.adapterId;
+        src.header.id = paths[i].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) continue;
+        if (wcscmp(src.viewGdiDeviceName, gdiName) != 0) continue;
+
+        // DISPLAYCONFIG_SDR_WHITE_LEVEL appeared in the Windows 10 1709 SDK
+        // but isn't always reachable through the public Windows.h on older
+        // toolchains. Define the struct/constant locally so we don't depend
+        // on SDK version.
+        struct LocalSdrWhiteLevel {
+            DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            ULONG SDRWhiteLevel;
+        };
+        constexpr DISPLAYCONFIG_DEVICE_INFO_TYPE kGetSdrWhite =
+            static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(11);
+        LocalSdrWhiteLevel wl{};
+        wl.header.type = kGetSdrWhite;
+        wl.header.size = sizeof(wl);
+        wl.header.adapterId = paths[i].targetInfo.adapterId;
+        wl.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&wl.header) != ERROR_SUCCESS) {
+            return 0.0f;
+        }
+        return wl.SDRWhiteLevel * 80.0f / 1000.0f;
+    }
+    return 0.0f;
 }
 
 // Walk every adapter's outputs to find the one Windows considers the primary
@@ -67,6 +122,11 @@ Frame CaptureFullScreen() {
 
     DXGI_OUTPUT_DESC1 outDesc{};
     ThrowIfFailed(output6->GetDesc1(&outDesc), "IDXGIOutput6::GetDesc1");
+
+    // outDesc.DeviceName is the GDI \\.\DISPLAYn string Windows uses for the
+    // monitor; we feed it into the Display Config API to look up the user-
+    // configured SDR-content brightness for this output.
+    const float sdrWhiteFromOs = QuerySdrWhiteLevelNits(outDesc.DeviceName);
 
     ComPtr<IDXGIAdapter> adapter;
     ThrowIfFailed(output6->GetParent(IID_PPV_ARGS(&adapter)),
@@ -159,6 +219,9 @@ Frame CaptureFullScreen() {
     frame.bytesPerPixel = frame.isHdr ? 8u : 4u;
     frame.maxLuminanceNits = outDesc.MaxLuminance;
     frame.minLuminanceNits = outDesc.MinLuminance;
+    // Fall back to scRGB convention (1.0 = 80 nits) if the OS doesn't expose
+    // a value, but in practice every HDR-enabled monitor on Win10 1709+ does.
+    frame.sdrWhiteLevelNits = sdrWhiteFromOs > 0.0f ? sdrWhiteFromOs : 80.0f;
 
     const size_t rowBytes = size_t(desc.Width) * frame.bytesPerPixel;
     frame.pixels.resize(rowBytes * desc.Height);

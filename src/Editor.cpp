@@ -726,7 +726,7 @@ void DrawSidebar(EditorContext& ctx) {
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
         static const char* kCurves[] = {"Linear (clip)", "Reinhard", "ACES",
                                         "Hable", "AgX", "Khronos Neutral",
-                                        "Preserve SDR"};
+                                        "Preserve SDR", "BT.2390 (reference)"};
         int curve = static_cast<int>(ctx.params.curve);
         if (ImGui::Combo("Curve", &curve, kCurves, IM_ARRAYSIZE(kCurves))) {
             ctx.params.curve = static_cast<TonemapCurve>(curve);
@@ -743,6 +743,30 @@ void DrawSidebar(EditorContext& ctx) {
                            0.0f, 0.5f, "%.3f");
         ImGui::SliderFloat("Highlight rolloff",
                            &ctx.params.highlightRolloff, 0.0f, 1.0f, "%.2f");
+
+        // Knee / desat / source peak only affect PreserveSdr + BT2390. Show
+        // them in the same section so the curve's full controls are together.
+        const bool kneeAware = ctx.params.curve == TonemapCurve::PreserveSdr ||
+                               ctx.params.curve == TonemapCurve::BT2390;
+        if (!kneeAware) ImGui::BeginDisabled();
+        ImGui::SliderFloat("Knee point", &ctx.params.kneePoint, 0.05f, 0.95f,
+                           "%.2f");
+        ImGui::SliderFloat("Highlight desat", &ctx.params.highlightDesat,
+                           0.0f, 1.0f, "%.2f");
+        if (!kneeAware) ImGui::EndDisabled();
+
+        const bool peakAware = ctx.params.curve == TonemapCurve::BT2390;
+        if (!peakAware) ImGui::BeginDisabled();
+        ImGui::SliderFloat("Source peak (nits)", &ctx.params.sourcePeakNits,
+                           400.0f, 4000.0f, "%.0f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Auto##srcpeak")) {
+            const float peak = ctx.source->maxLuminanceNits > 0.0f
+                                   ? ctx.source->maxLuminanceNits
+                                   : 1000.0f;
+            ctx.params.sourcePeakNits = std::clamp(peak, 400.0f, 4000.0f);
+        }
+        if (!peakAware) ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Color")) {
         ImGui::SliderFloat("Saturation", &ctx.params.saturation, 0.0f, 2.0f,

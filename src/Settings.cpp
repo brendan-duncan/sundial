@@ -58,6 +58,9 @@ void WriteTonemapParams(std::ostream& f, const TonemapParams& p) {
     f << "b_gain = " << p.bGain << "\n";
     f << "output_gamma = " << static_cast<int>(p.outputGamma) << "\n";
     f << "local_strength = " << p.localStrength << "\n";
+    f << "knee_point = " << p.kneePoint << "\n";
+    f << "highlight_desat = " << p.highlightDesat << "\n";
+    f << "source_peak_nits = " << p.sourcePeakNits << "\n";
 }
 
 // Apply a single key=value pair to a TonemapParams. Returns false if the key
@@ -68,7 +71,7 @@ bool ApplyTonemapKey(TonemapParams& p, const std::string& key,
         if (key == "sdr_white_nits") p.sdrWhiteNits = std::stof(value);
         else if (key == "exposure_ev") p.exposureEV = std::stof(value);
         else if (key == "curve") {
-            int c = std::clamp(std::stoi(value), 0, 6);
+            int c = std::clamp(std::stoi(value), 0, 7);
             p.curve = static_cast<TonemapCurve>(c);
         }
         else if (key == "saturation") p.saturation = std::stof(value);
@@ -87,6 +90,15 @@ bool ApplyTonemapKey(TonemapParams& p, const std::string& key,
         }
         else if (key == "local_strength") {
             p.localStrength = std::clamp(std::stof(value), 0.0f, 1.0f);
+        }
+        else if (key == "knee_point") {
+            p.kneePoint = std::clamp(std::stof(value), 0.05f, 0.95f);
+        }
+        else if (key == "highlight_desat") {
+            p.highlightDesat = std::clamp(std::stof(value), 0.0f, 1.0f);
+        }
+        else if (key == "source_peak_nits") {
+            p.sourcePeakNits = std::clamp(std::stof(value), 80.0f, 10000.0f);
         }
         else return false;
         return true;
