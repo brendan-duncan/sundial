@@ -1,0 +1,128 @@
+#include "TrayIcon.h"
+
+#include <shellapi.h>
+
+#include "Resource.h"
+
+namespace sundial {
+namespace {
+
+constexpr wchar_t kClassName[] = L"SundialTray";
+constexpr UINT kTrayMessage = WM_APP + 1;
+constexpr UINT kIdCapture = 3001;
+constexpr UINT kIdExit = 3002;
+constexpr UINT kIdEditImage = 3003;
+constexpr UINT kIconId = 1;
+
+void EnsureClassRegistered() {
+    static bool registered = false;
+    if (registered) return;
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TrayIcon::WndProcThunk;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kClassName;
+    RegisterClassExW(&wc);
+    registered = true;
+}
+
+}  // namespace
+
+LRESULT CALLBACK TrayIcon::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp,
+                                        LPARAM lp) {
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCT*>(lp);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    }
+    auto* self = reinterpret_cast<TrayIcon*>(
+        GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) return self->WndProc(hwnd, msg, wp, lp);
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == kTrayMessage) {
+        switch (LOWORD(lp)) {
+            case WM_LBUTTONUP:
+            case WM_LBUTTONDBLCLK:
+                if (primary_) primary_();
+                return 0;
+            case WM_RBUTTONUP:
+            case WM_CONTEXTMENU:
+                ShowContextMenu();
+                return 0;
+        }
+        return 0;
+    }
+    if (msg == WM_COMMAND) {
+        switch (LOWORD(wp)) {
+            case kIdCapture:
+                if (primary_) primary_();
+                return 0;
+            case kIdEditImage:
+                if (editImage_) editImage_();
+                return 0;
+            case kIdExit:
+                if (exit_) exit_();
+                return 0;
+        }
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void TrayIcon::ShowContextMenu() {
+    POINT pt;
+    GetCursorPos(&pt);
+
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, kIdCapture, L"Capture\tWin+Shift+X");
+    AppendMenuW(menu, MF_STRING, kIdEditImage, L"Edit Image...");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kIdExit, L"Exit");
+
+    // SetForegroundWindow before TrackPopupMenu is the standard
+    // workaround for the menu not dismissing when the user clicks away.
+    SetForegroundWindow(hwnd_);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0,
+                   hwnd_, nullptr);
+    DestroyMenu(menu);
+}
+
+bool TrayIcon::Initialize(const wchar_t* tooltip) {
+    EnsureClassRegistered();
+
+    hwnd_ = CreateWindowExW(0, kClassName, L"SundialTray", 0, 0, 0, 0, 0,
+                            HWND_MESSAGE, nullptr,
+                            GetModuleHandleW(nullptr), this);
+    if (!hwnd_) return false;
+
+    nid_.cbSize = sizeof(nid_);
+    nid_.hWnd = hwnd_;
+    nid_.uID = kIconId;
+    nid_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid_.uCallbackMessage = kTrayMessage;
+    nid_.hIcon = LoadIconW(GetModuleHandleW(nullptr),
+                           MAKEINTRESOURCEW(IDI_APP_ICON));
+    if (!nid_.hIcon) {
+        nid_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+    lstrcpynW(nid_.szTip, tooltip ? tooltip : L"Sundial",
+              ARRAYSIZE(nid_.szTip));
+    if (!Shell_NotifyIconW(NIM_ADD, &nid_)) {
+        DestroyWindow(hwnd_);
+        hwnd_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void TrayIcon::Shutdown() {
+    if (hwnd_) {
+        Shell_NotifyIconW(NIM_DELETE, &nid_);
+        DestroyWindow(hwnd_);
+        hwnd_ = nullptr;
+    }
+}
+
+}  // namespace sundial
