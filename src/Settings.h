@@ -84,6 +84,10 @@ struct AppSettings {
     bool editOnCapture = true;    // on by default - users can disable in Settings
     bool saveHdrJxr = true;       // write a .jxr alongside the .png when capture is HDR
     bool autoCopyCapture = false; // copy the result to the clipboard after each capture
+    // Where saves go. Empty = the platform default returned by
+    // DefaultOutputDir() (<user>/Pictures/Sundial). Resolve via
+    // ResolveOutputDir() rather than reading this field directly.
+    std::wstring outputFolder;
     TonemapParams tonemap;
 };
 
@@ -91,6 +95,13 @@ struct AppSettings {
 std::filesystem::path SettingsFilePath();
 AppSettings LoadSettings();
 void SaveSettings(const AppSettings& settings);
+
+// <user>/Pictures/Sundial - the default save location when the user hasn't
+// overridden outputFolder. Creates the directory if it doesn't exist.
+std::filesystem::path DefaultOutputDir();
+// outputFolder when set, otherwise DefaultOutputDir(). Always returns an
+// existing directory (created on demand).
+std::filesystem::path ResolveOutputDir(const AppSettings& settings);
 
 // Named tonemap presets, stored as %APPDATA%\Sundial\presets\<name>.ini.
 // NormalizePresetName strips characters that aren't allowed in Windows

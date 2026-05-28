@@ -170,8 +170,12 @@ struct EditorContext {
 
     // When non-empty, the Save button overwrites this path and Save As
     // opens its dialog with this directory + stem pre-filled. Empty for a
-    // fresh capture (Save then writes to Pictures\Sundial\sundial_<ts>.png).
+    // fresh capture (Save then writes to <outputFolder>/sundial_<ts>.png).
     std::wstring defaultSavePath;
+
+    // User-configured save folder, mirrored from AppSettings::outputFolder.
+    // Empty falls back to DefaultOutputDir() (<Pictures>/Sundial).
+    std::wstring outputFolder;
 
     // Brief "Copied to clipboard" feedback timer.
     std::chrono::steady_clock::time_point copyFeedbackUntil{};
@@ -334,7 +338,8 @@ Frame ProduceEditedFrame(const EditorContext& ctx) {
     return edited;
 }
 
-std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath) {
+std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
+                            const std::wstring& outputFolderOverride) {
     std::filesystem::path defaultDir;
     std::wstring stem;
     if (!defaultPath.empty()) {
@@ -343,13 +348,9 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath) {
         stem = p.stem().wstring();
     }
     if (defaultDir.empty()) {
-        PWSTR pictures = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr,
-                                           &pictures))) {
-            defaultDir = pictures;
-            CoTaskMemFree(pictures);
-        }
-        defaultDir /= L"Sundial";
+        AppSettings ds{};
+        ds.outputFolder = outputFolderOverride;
+        defaultDir = ResolveOutputDir(ds);
     }
     std::error_code ec;
     std::filesystem::create_directories(defaultDir, ec);
@@ -531,24 +532,20 @@ bool IconButton(const char* id, const char* label, IconKind icon,
 }
 
 // Path the Save button writes to. If `defaultPath` is set we overwrite that
-// file in place. Otherwise we generate Pictures\Sundial\sundial_<ts>.png.
-std::wstring DefaultSavePath(const std::wstring& defaultPath) {
+// file in place. Otherwise we generate <outputFolder>/sundial_<ts>.png, where
+// outputFolder is the user-configured save location (or the platform default
+// when unset).
+std::wstring DefaultSavePath(const std::wstring& defaultPath,
+                             const std::wstring& outputFolderOverride) {
     if (!defaultPath.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(
             std::filesystem::path(defaultPath).parent_path(), ec);
         return defaultPath;
     }
-    PWSTR pictures = nullptr;
-    std::filesystem::path dir;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr,
-                                       &pictures))) {
-        dir = pictures;
-        CoTaskMemFree(pictures);
-    }
-    dir /= L"Sundial";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
+    AppSettings ds{};
+    ds.outputFolder = outputFolderOverride;
+    std::filesystem::path dir = ResolveOutputDir(ds);
 
     SYSTEMTIME t;
     GetLocalTime(&t);
@@ -659,13 +656,15 @@ void DrawPresetSection(EditorContext& ctx) {
 void DrawOutputSection(EditorContext& ctx) {
     const ImVec2 kBtn(142, 30);
     if (IconButton("save", "Save", IconKind::Save, kBtn)) {
-        ctx.result.outputPath = DefaultSavePath(ctx.defaultSavePath);
+        ctx.result.outputPath =
+            DefaultSavePath(ctx.defaultSavePath, ctx.outputFolder);
         ctx.result.saved = true;
         ctx.exitRequested = true;
     }
     ImGui::SameLine();
     if (IconButton("saveas", "Save As...", IconKind::SaveAs, kBtn)) {
-        std::wstring path = PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath);
+        std::wstring path =
+            PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder);
         if (!path.empty()) {
             ctx.result.outputPath = path;
             ctx.result.saved = true;
@@ -1134,6 +1133,7 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     EditorContext ctx;
     ctx.source = &source;
     ctx.defaultSavePath = defaultSavePath;
+    ctx.outputFolder = settings.outputFolder;
     ctx.result.updatedSettings = settings;
     ctx.params = settings.tonemap;
     ctx.cropX = 0;
@@ -1236,11 +1236,14 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
             const bool s = ImGui::IsKeyPressed(ImGuiKey_S, false);
             const bool x = ImGui::IsKeyPressed(ImGuiKey_X, false);
             if (ctrl && !shift && s) {
-                ctx.result.outputPath = DefaultSavePath(ctx.defaultSavePath);
+                ctx.result.outputPath =
+                    DefaultSavePath(ctx.defaultSavePath, ctx.outputFolder);
                 ctx.result.saved = true;
                 ctx.exitRequested = true;
             } else if (ctrl && shift && x) {
-                std::wstring path = PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath);
+                std::wstring path = PickSaveAsPath(ctx.hwnd,
+                                                   ctx.defaultSavePath,
+                                                   ctx.outputFolder);
                 if (!path.empty()) {
                     ctx.result.outputPath = path;
                     ctx.result.saved = true;

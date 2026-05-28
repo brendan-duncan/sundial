@@ -28,6 +28,25 @@ std::filesystem::path AppDataDir() {
     return dir;
 }
 
+std::string WideToUtf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()),
+                                nullptr, 0, nullptr, nullptr);
+    std::string s(size_t(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), s.data(), n,
+                        nullptr, nullptr);
+    return s;
+}
+
+std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()),
+                                nullptr, 0);
+    std::wstring w(size_t(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), w.data(), n);
+    return w;
+}
+
 std::filesystem::path PresetsDir() {
     auto dir = AppDataDir() / L"presets";
     std::error_code ec;
@@ -113,6 +132,30 @@ std::filesystem::path SettingsFilePath() {
     return AppDataDir() / L"settings.ini";
 }
 
+std::filesystem::path DefaultOutputDir() {
+    PWSTR pictures = nullptr;
+    std::filesystem::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr,
+                                       &pictures))) {
+        dir = pictures;
+        CoTaskMemFree(pictures);
+    } else {
+        dir = L".";
+    }
+    dir /= L"Sundial";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+std::filesystem::path ResolveOutputDir(const AppSettings& settings) {
+    if (settings.outputFolder.empty()) return DefaultOutputDir();
+    std::filesystem::path dir = settings.outputFolder;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
 AppSettings LoadSettings() {
     AppSettings s;
     std::ifstream f(SettingsFilePath());
@@ -132,6 +175,8 @@ AppSettings LoadSettings() {
             s.saveHdrJxr = (value == "true" || value == "1");
         } else if (key == "auto_copy_capture") {
             s.autoCopyCapture = (value == "true" || value == "1");
+        } else if (key == "output_folder") {
+            s.outputFolder = Utf8ToWide(value);
         } else {
             ApplyTonemapKey(s.tonemap, key, value);
         }
@@ -146,6 +191,7 @@ void SaveSettings(const AppSettings& s) {
     f << "save_hdr_jxr = " << (s.saveHdrJxr ? "true" : "false") << "\n";
     f << "auto_copy_capture = " << (s.autoCopyCapture ? "true" : "false")
       << "\n";
+    f << "output_folder = " << WideToUtf8(s.outputFolder) << "\n";
     WriteTonemapParams(f, s.tonemap);
 }
 

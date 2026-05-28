@@ -237,18 +237,3 @@ editor only renders the HDR one when a comparison mode actually needs it.
   Photos still recognises it as HDR via the FP16 pixel format alone.
 - Area capture path captures the full primary monitor then crops in CPU.
   Fine for stills, but if we add area video this becomes a hot path.
-
-## Future tonemap ideas (not yet implemented)
-
-- **Local tonemap (post-shot)** — operate per-region instead of globally so
-  dark UIs in front of bright HDR content both stay legible. Significantly
-  more involved (multi-resolution Gaussian decomposition with bilateral or
-  Gaussian pyramid on the luminance channel, then recombine with the
-  original chromaticity). Has to live in both `Tonemap.cpp` (CPU save) and
-  `ShaderTonemap.cpp` (GPU preview), and the GPU version needs multiple
-  passes through downsampled render targets to keep blur cost manageable.
-
-If you implement any of these: add to `TonemapParams` in `Settings.h`,
-implement in `Tonemap.cpp` AND `ShaderTonemap.cpp` (the maths must match
-between CPU save and GPU preview), and surface in `Editor.cpp`'s sidebar
-(probably under a new collapsing header).

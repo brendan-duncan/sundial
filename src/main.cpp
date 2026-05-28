@@ -27,20 +27,46 @@ namespace {
 
 constexpr int kHotkeyToolbar = 1;
 
-std::filesystem::path OutputDir() {
-    PWSTR pictures = nullptr;
-    std::filesystem::path dir;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr,
-                                       &pictures))) {
-        dir = pictures;
-        CoTaskMemFree(pictures);
-    } else {
-        dir = L".";
+// Max bounding box for the toast's screenshot preview. Kept in sync with the
+// thumbnail container size in Toast.cpp - we letterbox the source into this
+// box (preserving aspect) and ship the already-resized BGRA8 to the toast.
+constexpr uint32_t kToastThumbMaxW = 128;
+constexpr uint32_t kToastThumbMaxH = 90;
+
+void ComputeThumbSize(uint32_t srcW, uint32_t srcH,
+                      uint32_t& outW, uint32_t& outH) {
+    if (srcW == 0 || srcH == 0) {
+        outW = outH = 0;
+        return;
     }
-    dir /= L"Sundial";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    return dir;
+    const double aspect = double(srcW) / double(srcH);
+    const double boxAspect = double(kToastThumbMaxW) / double(kToastThumbMaxH);
+    if (aspect > boxAspect) {
+        outW = kToastThumbMaxW;
+        outH = std::max(1u,
+                        uint32_t(double(kToastThumbMaxW) / aspect + 0.5));
+    } else {
+        outH = kToastThumbMaxH;
+        outW = std::max(1u,
+                        uint32_t(double(kToastThumbMaxH) * aspect + 0.5));
+    }
+}
+
+// Produce a BGRA8 thumbnail of the saved frame for the toast. Uses the same
+// tonemap the PNG was written with, so the preview matches the file on disk.
+// Returns an empty vector if the frame is degenerate (which we then fall
+// back to a text-only toast for).
+std::vector<uint8_t> MakeToastThumbnail(const sundial::Frame& frame,
+                                        const sundial::TonemapParams& tonemap,
+                                        uint32_t& outW, uint32_t& outH) {
+    ComputeThumbSize(frame.width, frame.height, outW, outH);
+    if (outW == 0 || outH == 0) return {};
+    // `small` is a Windows COM IDL typedef (rpcndr.h) - avoid that name.
+    sundial::Frame thumb = sundial::Resize(frame, outW, outH);
+    if (thumb.isHdr) {
+        return sundial::TonemapToBgra8(thumb, tonemap);
+    }
+    return std::move(thumb.pixels);
 }
 
 std::wstring Timestamp() {
@@ -125,7 +151,12 @@ void SaveAndNotify(const sundial::Frame& frame,
         selectInExplorer = png.wstring();
     }
     const std::wstring body = dir + L"\n(click to open in Explorer)";
-    sundial::ShowToast(title, body, selectInExplorer);
+
+    uint32_t thumbW = 0, thumbH = 0;
+    std::vector<uint8_t> thumb = MakeToastThumbnail(frame, tonemap,
+                                                    thumbW, thumbH);
+    sundial::ShowToast(title, body, selectInExplorer,
+                       std::move(thumb), thumbW, thumbH);
 }
 
 // Seed tonemap values from the captured frame so each capture starts from a
@@ -183,7 +214,8 @@ void HandleCapture(sundial::AppSettings& settings, sundial::Frame frame) {
             CopyFrameToClipboard(result.editedFrame, settings.tonemap);
         }
     } else {
-        const auto base = OutputDir() / (L"sundial_" + Timestamp());
+        const auto base =
+            sundial::ResolveOutputDir(settings) / (L"sundial_" + Timestamp());
         const std::wstring png = base.wstring() + L".png";
         SaveAndNotify(frame, settings.tonemap, settings.saveHdrJxr, png);
         if (settings.autoCopyCapture) {
@@ -198,10 +230,12 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
     const bool prevEditOnCapture = settings.editOnCapture;
     const bool prevSaveHdrJxr = settings.saveHdrJxr;
     const bool prevAutoCopy = settings.autoCopyCapture;
+    const std::wstring prevOutputFolder = settings.outputFolder;
     auto result = sundial::ShowToolbar(settings);
     if (settings.editOnCapture != prevEditOnCapture ||
         settings.saveHdrJxr != prevSaveHdrJxr ||
-        settings.autoCopyCapture != prevAutoCopy) {
+        settings.autoCopyCapture != prevAutoCopy ||
+        settings.outputFolder != prevOutputFolder) {
         sundial::SaveSettings(settings);
     }
     switch (result.kind) {

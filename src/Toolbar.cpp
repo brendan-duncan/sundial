@@ -1,6 +1,7 @@
 #include "Toolbar.h"
 
 #include <Windows.h>
+#include <shobjidl.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -30,6 +31,8 @@ constexpr int kIdSettings = 1003;
 constexpr int kIdMenuEditOnCapture = 2001;
 constexpr int kIdMenuSaveHdrJxr = 2002;
 constexpr int kIdMenuAutoCopyCapture = 2003;
+constexpr int kIdMenuOutputFolder = 2004;
+constexpr int kIdMenuOutputFolderReset = 2005;
 
 struct ToolbarState {
     AppSettings* settings = nullptr;
@@ -175,6 +178,46 @@ int HitTest(int x, int y) {
     return 0;
 }
 
+// Modal "pick a folder" dialog via IFileOpenDialog (FOS_PICKFOLDERS). Returns
+// the empty string if the user cancels. `seedFolder` pre-selects a starting
+// directory; pass empty to let the shell pick its default.
+std::wstring PickFolder(HWND owner, const std::wstring& seedFolder) {
+    IFileOpenDialog* dlg = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                                IID_PPV_ARGS(&dlg)))) {
+        return {};
+    }
+    DWORD opts = 0;
+    dlg->GetOptions(&opts);
+    dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST |
+                    FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
+    dlg->SetTitle(L"Choose output folder");
+
+    if (!seedFolder.empty()) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(seedFolder.c_str(), nullptr,
+                                                  IID_PPV_ARGS(&item)))) {
+            dlg->SetFolder(item);
+            item->Release();
+        }
+    }
+
+    std::wstring chosen;
+    if (SUCCEEDED(dlg->Show(owner))) {
+        IShellItem* result = nullptr;
+        if (SUCCEEDED(dlg->GetResult(&result))) {
+            PWSTR p = nullptr;
+            if (SUCCEEDED(result->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                chosen = p;
+                CoTaskMemFree(p);
+            }
+            result->Release();
+        }
+    }
+    dlg->Release();
+    return chosen;
+}
+
 void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu,
@@ -189,6 +232,15 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
                 MF_STRING |
                     (s->settings->autoCopyCapture ? MF_CHECKED : MF_UNCHECKED),
                 kIdMenuAutoCopyCapture, L"Auto Copy Capture");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kIdMenuOutputFolder, L"Output Folder...");
+    // "Reset to default" stays disabled when already on the default so the
+    // menu reads as "this is currently the default" without an extra label.
+    AppendMenuW(menu,
+                MF_STRING |
+                    (s->settings->outputFolder.empty() ? MF_GRAYED : 0),
+                kIdMenuOutputFolderReset,
+                L"Reset Output Folder to Default");
 
     RECT btn = GetButtonRect(kIdSettings);
     POINT pt{btn.left, btn.bottom};
@@ -208,6 +260,23 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
     } else if (cmd == kIdMenuAutoCopyCapture) {
         s->settings->autoCopyCapture = !s->settings->autoCopyCapture;
         InvalidateRect(hwnd, nullptr, FALSE);
+    } else if (cmd == kIdMenuOutputFolder) {
+        const std::wstring seed = s->settings->outputFolder.empty()
+                                      ? DefaultOutputDir().wstring()
+                                      : s->settings->outputFolder;
+        std::wstring picked = PickFolder(hwnd, seed);
+        if (!picked.empty()) {
+            // Treat picking the default location as "reset to default" so the
+            // setting stays portable across users (the field is stored as a
+            // literal path, not a token).
+            if (picked == DefaultOutputDir().wstring()) {
+                s->settings->outputFolder.clear();
+            } else {
+                s->settings->outputFolder = picked;
+            }
+        }
+    } else if (cmd == kIdMenuOutputFolderReset) {
+        s->settings->outputFolder.clear();
     }
 }
 

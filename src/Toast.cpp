@@ -10,16 +10,63 @@ namespace sundial {
 namespace {
 
 constexpr wchar_t kClassName[] = L"SundialToast";
-constexpr int kWidth = 480;
-constexpr int kHeight = 96;
+constexpr int kPadding = 10;
+constexpr int kThumbMaxW = 128;
+constexpr int kThumbMaxH = 90;
+constexpr int kTextGap = 14;       // gap between thumbnail and text column
+constexpr int kBaseWidth = 540;
+constexpr int kBaseHeight = 110;
 constexpr int kMarginPx = 20;
 
 struct ToastData {
     std::wstring title;
     std::wstring body;
     std::wstring openOnClickPath;  // empty = non-clickable
-    int durationMs;
+    std::vector<uint8_t> previewBgra;
+    uint32_t previewW = 0;
+    uint32_t previewH = 0;
+    int durationMs = 0;
 };
+
+// Where the (possibly letterboxed) thumbnail actually lands inside the
+// kThumbMaxW x kThumbMaxH container. Centered horizontally + vertically.
+RECT ThumbRect(const ToastData& d) {
+    RECT r{};
+    if (d.previewBgra.empty() || d.previewW == 0 || d.previewH == 0) return r;
+    const int boxX = kPadding;
+    const int boxY = kPadding;
+    const int dstW = int(d.previewW);
+    const int dstH = int(d.previewH);
+    r.left = boxX + (kThumbMaxW - dstW) / 2;
+    r.top = boxY + (kThumbMaxH - dstH) / 2;
+    r.right = r.left + dstW;
+    r.bottom = r.top + dstH;
+    return r;
+}
+
+void DrawThumbnail(HDC hdc, const ToastData& d) {
+    if (d.previewBgra.empty()) return;
+    const RECT r = ThumbRect(d);
+
+    // Subtle border around the thumbnail so it reads as a panel even on
+    // images whose edges blend into the toast background.
+    RECT border{r.left - 1, r.top - 1, r.right + 1, r.bottom + 1};
+    HBRUSH frame = CreateSolidBrush(RGB(60, 60, 60));
+    FrameRect(hdc, &border, frame);
+    DeleteObject(frame);
+
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = int(d.previewW);
+    bi.bmiHeader.biHeight = -int(d.previewH);  // negative => top-down rows
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    SetStretchBltMode(hdc, HALFTONE);
+    StretchDIBits(hdc, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                  0, 0, int(d.previewW), int(d.previewH),
+                  d.previewBgra.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+}
 
 LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -77,6 +124,9 @@ LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SelectObject(hdc, oldPen);
             DeleteObject(pen);
 
+            const bool hasThumb = d && !d->previewBgra.empty();
+            if (hasThumb) DrawThumbnail(hdc, *d);
+
             SetBkMode(hdc, TRANSPARENT);
 
             HFONT titleFont = CreateFontW(
@@ -88,8 +138,11 @@ LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 
-            RECT titleRect{16, 10, rc.right - 16, 36};
-            RECT bodyRect{16, 38, rc.right - 16, rc.bottom - 10};
+            const int textLeft =
+                hasThumb ? kPadding + kThumbMaxW + kTextGap : 16;
+            const int textRight = rc.right - 12;
+            RECT titleRect{textLeft, 14, textRight, 40};
+            RECT bodyRect{textLeft, 42, textRight, rc.bottom - 10};
 
             HGDIOBJ oldFont = SelectObject(hdc, titleFont);
             SetTextColor(hdc, RGB(245, 245, 245));
@@ -135,8 +188,8 @@ DWORD WINAPI ToastThread(LPVOID param) {
 
     RECT workArea{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
-    const int x = workArea.right - kWidth - kMarginPx;
-    const int y = workArea.bottom - kHeight - kMarginPx;
+    const int x = workArea.right - kBaseWidth - kMarginPx;
+    const int y = workArea.bottom - kBaseHeight - kMarginPx;
 
     // WS_EX_TRANSPARENT would block clicks. Drop it when the toast is
     // interactive so we receive WM_LBUTTONUP; keep WS_EX_NOACTIVATE so the
@@ -149,7 +202,7 @@ DWORD WINAPI ToastThread(LPVOID param) {
 
     HWND hwnd = CreateWindowExW(
         exStyle, kClassName, nullptr, WS_POPUP,
-        x, y, kWidth, kHeight,
+        x, y, kBaseWidth, kBaseHeight,
         nullptr, nullptr, GetModuleHandleW(nullptr), data.get());
 
     if (!hwnd) return 1;
@@ -171,8 +224,17 @@ DWORD WINAPI ToastThread(LPVOID param) {
 void ShowToast(const std::wstring& title,
                const std::wstring& body,
                const std::wstring& openOnClickPath,
+               std::vector<uint8_t> previewBgra,
+               uint32_t previewWidth,
+               uint32_t previewHeight,
                int durationMs) {
-    auto* data = new ToastData{title, body, openOnClickPath, durationMs};
+    auto* data = new ToastData{title,
+                               body,
+                               openOnClickPath,
+                               std::move(previewBgra),
+                               previewWidth,
+                               previewHeight,
+                               durationMs};
     HANDLE h = CreateThread(nullptr, 0, ToastThread, data, 0, nullptr);
     if (h) {
         CloseHandle(h);
