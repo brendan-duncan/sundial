@@ -40,6 +40,7 @@ add_executable(sundial WIN32
   src/Settings.cpp
   src/ImageOps.cpp
   src/ShaderTonemap.cpp
+  src/VideoRecorder.cpp
   src/Toolbar.cpp
   src/Editor.cpp
   src/TrayIcon.cpp
@@ -56,6 +57,9 @@ target_link_libraries(sundial PRIVATE
   dxguid.lib
   d3dcompiler.lib
   windowscodecs.lib
+  mfplat.lib
+  mfreadwrite.lib
+  mfuuid.lib
   user32.lib
   gdi32.lib
   shell32.lib

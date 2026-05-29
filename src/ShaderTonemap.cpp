@@ -451,6 +451,17 @@ bool ShaderTonemap::SetSource(const Frame& frame) {
     return true;
 }
 
+bool ShaderTonemap::SetSourceTexture(ID3D11Texture2D* tex, bool isHdr) {
+    sourceSrv_.Reset();
+    sourceIsHdr_ = isHdr;
+    // No mip chain on this path: the recorder feeds full-res GPU textures and
+    // local tonemap (which samples a coarse LOD) isn't used during recording.
+    sourceMipCount_ = 1;
+    if (!tex) return false;
+    return SUCCEEDED(
+        device_->CreateShaderResourceView(tex, nullptr, &sourceSrv_));
+}
+
 bool ShaderTonemap::ResizeTarget(uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return false;
     if (width == outputW_ && height == outputH_ && outputSdrSrv_) return true;

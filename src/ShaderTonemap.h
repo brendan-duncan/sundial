@@ -29,6 +29,13 @@ public:
     // once per source change (capture, crop, resize).
     bool SetSource(const Frame& frame);
 
+    // Set the tonemap source from an existing GPU texture, with no CPU upload.
+    // Used by the video recorder, which already has each captured frame on the
+    // GPU. Unlike SetSource() this skips mip generation, so the local-tonemap
+    // pass is unavailable on this path (localStrength is effectively ignored).
+    // `isHdr` selects the same linear-vs-sRGB source handling SetSource() does.
+    bool SetSourceTexture(ID3D11Texture2D* tex, bool isHdr);
+
     // (Re)create the render target texture at the given dimensions. The SRV
     // returned by GetOutputSrv() is invalidated until this is called.
     bool ResizeTarget(uint32_t width, uint32_t height);
@@ -41,6 +48,11 @@ public:
     // or saturation applied. This is what the user would see with no
     // tonemap; useful for SDR/HDR comparison. SRV via GetHdrSrv().
     void RenderHdrPassthrough();
+
+    // The 8-bit sRGB SDR render target produced by RenderSdr(). Exposed so
+    // callers that need the pixels on the CPU (e.g. the video encoder) can
+    // CopyResource it into a staging texture.
+    ID3D11Texture2D* SdrTexture() const { return outputSdrTex_.Get(); }
 
     ID3D11ShaderResourceView* GetSdrSrv() const { return outputSdrSrv_.Get(); }
     ID3D11ShaderResourceView* GetHdrSrv() const { return outputHdrSrv_.Get(); }

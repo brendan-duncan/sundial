@@ -225,6 +225,7 @@ void HandleCapture(sundial::AppSettings& settings, sundial::Frame frame) {
 }
 
 void RunEditImageFlow(sundial::AppSettings& settings);
+void NotifyVideoSaved(const std::wstring& videoPath);
 
 void RunToolbarFlow(sundial::AppSettings& settings) {
     const bool prevEditOnCapture = settings.editOnCapture;
@@ -255,10 +256,22 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
         case sundial::ToolbarResult::Kind::EditImage:
             RunEditImageFlow(settings);
             break;
+        case sundial::ToolbarResult::Kind::VideoRecorded:
+            NotifyVideoSaved(result.videoPath);
+            break;
         case sundial::ToolbarResult::Kind::None:
         default:
             break;
     }
+}
+
+// Toast for a finished screen recording (path is the saved .mp4).
+void NotifyVideoSaved(const std::wstring& videoPath) {
+    std::filesystem::path p = videoPath;
+    sundial::ShowToast(L"Recording saved  -  " + p.filename().wstring(),
+                       p.parent_path().wstring() +
+                           L"\n(click to open in Explorer)",
+                       videoPath);
 }
 
 std::wstring GetExePath() {
