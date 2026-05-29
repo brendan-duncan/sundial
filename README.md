@@ -24,6 +24,28 @@ screen darkens and the toolbar appears at the top of the primary monitor.
   re-tone it through the same editor. You can also right-click any `.jxr`
   in Explorer and pick **Open with Sundial**.
 
+### Recording
+
+The **Record** button (red dot) on the toolbar starts a Snipping-Tool-style
+video flow:
+
+1. Drag a rectangle to choose the region. The selection is **persistent** —
+   it has corner/edge handles (drag to resize) and can be dragged from the
+   interior to move. **Esc** / right-click cancels.
+2. Once a region is set, the toolbar is replaced by a floating control bar
+   with a **Start** button and a timer, anchored to the selection.
+3. **Start** runs a 3-second countdown shown in the middle of the rectangle,
+   then recording begins and the button becomes **Stop**. The timer shows
+   elapsed recording time.
+4. **Stop** (or **Esc**) finishes and writes the clip.
+
+Recordings are encoded to **H.264 / MP4** via Media Foundation and go through
+the **same HDR→SDR tonemap as screenshots** (current curve/look settings,
+with SDR-white and source-peak anchors seeded from the display) — so the file
+is standard SDR video that plays anywhere. The control bar and selection
+border use `WDA_EXCLUDEFROMCAPTURE`, so they're visible on screen but never
+appear in the recording, even when they overlap the region.
+
 ### Settings (toolbar gear menu)
 
 * **Edit on Capture** — open the editor after each capture. Off saves
@@ -67,7 +89,8 @@ When **Edit on Capture** is on, captures open in the editor.
 | Shortcut | Action |
 |---|---|
 | **Win+Shift+X** | Show the Sundial toolbar |
-| **Esc** / right-click | Cancel area selection |
+| **Esc** / right-click | Cancel area/region selection |
+| **Esc** (while recording) | Stop recording and save |
 | **Ctrl+S** | Editor: Save |
 | **Ctrl+Shift+X** | Editor: Save As… |
 | **Ctrl+X** | Editor: Cancel |
@@ -81,6 +104,9 @@ HDR capture produces two files with the same stem:
 * `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB, kept when **Save
   HDR Image (JXR)** is on so you can re-tone via **Edit Image…** without
   recapturing.
+
+Recordings land in the same folder as `sundial_YYYYMMDD_HHMMSS.mp4` (H.264,
+tonemapped SDR).
 
 The toast notification in the bottom-right opens the file in Explorer when
 clicked.
@@ -120,11 +146,12 @@ Remove-Item -Recurse -Force build
 | `HdrCapture.{h,cpp}` | DXGI Desktop Duplication, primary-monitor only. Produces `Frame` (FP16 scRGB when display is in HDR mode, BGRA8 otherwise) |
 | `Settings.{h,cpp}` | `AppSettings { editOnCapture, TonemapParams }`. INI-style load/save in `%APPDATA%\Sundial\settings.ini` |
 | `Tonemap.{h,cpp}` | CPU tonemap (`TonemapToBgra8(frame, params)`). Used on save |
-| `ShaderTonemap.{h,cpp}` | D3D11 pixel-shader version of the same tonemap for live editor preview. Must stay in sync with `Tonemap.cpp` |
+| `ShaderTonemap.{h,cpp}` | D3D11 pixel-shader version of the same tonemap for live editor preview and video recording. Must stay in sync with `Tonemap.cpp`. `SetSourceTexture()` feeds it a GPU texture directly (no CPU upload) for the recorder |
+| `VideoRecorder.{h,cpp}` | Screen recording. Worker-thread DXGI duplication loop → GPU crop → `ShaderTonemap` HDR→SDR → Media Foundation `IMFSinkWriter` (H.264/MP4). Own D3D11 device, isolated from the main thread |
 | `ImageOps.{h,cpp}` | CPU crop + bilinear resize for both FP16 and BGRA8 frames |
 | `Encoder.{h,cpp}` | WIC writers — JXR (`GUID_ContainerFormatWmp` + `64bppRGBAHalf`), PNG (`32bppBGRA`) |
 | `Toast.{h,cpp}` | Bottom-right layered notification window. Click opens Explorer at the file. Runs on its own thread |
-| `Toolbar.{h,cpp}` | Top-centre floating toolbar — Full Screen / Area / Settings. Settings is a `TrackPopupMenu` (no dialog). Dismisses on focus loss |
+| `Toolbar.{h,cpp}` | Top-centre floating toolbar — Full Screen / Record / Edit Image / Settings (Area is drag-on-overlay). Also drives the full video flow: persistent selection with handles, control bar, countdown, recording. Settings is a `TrackPopupMenu` (no dialog) |
 | `AreaSelector.{h,cpp}` | Full-screen layered overlay; drag rectangle, ESC/right-click cancels |
 | `Editor.{h,cpp}` | "Edit on Capture" window — ImGui sidebar + D3D11 live preview. Tonemap sliders, crop, resize, Save/Cancel |
 
@@ -231,9 +258,17 @@ editor only renders the HDR one when a comparison mode actually needs it.
 
 ## Known gaps / non-goals (right now)
 
-- Multi-monitor area capture: AreaSelector only covers the primary monitor.
-- No video capture yet.
+- Multi-monitor: capture and recording both cover the primary monitor only.
 - No HDR metadata (MaxCLL, MaxFALL, ICC) embedded in the JXR — Windows
   Photos still recognises it as HDR via the FP16 pixel format alone.
-- Area capture path captures the full primary monitor then crops in CPU.
-  Fine for stills, but if we add area video this becomes a hot path.
+- Area capture path captures the full primary monitor then crops in CPU
+  (fine for stills).
+- Video recording:
+  - Output is **SDR** (tonemapped) H.264/MP4 — no HDR-preserving output
+    (HEVC Main10 + HDR10 metadata) yet.
+  - No audio capture.
+  - The recorder reads back each tonemapped frame to the CPU before
+    encoding rather than feeding a GPU surface straight to the encoder; the
+    loop targets 30 fps.
+  - `DXGI_ERROR_ACCESS_LOST` (an HDR/resolution toggle mid-recording) stops
+    the recording cleanly instead of re-establishing duplication.
