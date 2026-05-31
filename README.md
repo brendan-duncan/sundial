@@ -4,6 +4,8 @@ Windows HDR-aware screen capture utility with support for HDR displays, includin
 
 ![Sundial HDR Editor](sundial_edit_side_by_side.png)
 
+Sundial runs in the Windows tray with no UI until it's invoked. **Win+Shift+X** is registered to invoke the Sundial capture tool.
+
 ## Installing
 
 Download the latest **Setup.exe** from the
