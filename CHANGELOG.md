@@ -1,3 +1,17 @@
+# 1.0.0
+
+* Installer and automatic updates via [Velopack](https://velopack.io). Sundial
+  now ships as a `Setup.exe` that installs per-user (no admin prompt). Installed
+  copies check for a newer release on launch, download it in the background, and
+  offer to restart into it.
+* Manual **Check for Updates…** in the tray menu and the toolbar **Settings**
+  menu.
+* New releases are built and published automatically by a GitHub Action when a
+  version tag is pushed.
+* **About Sundial…** item (tray and toolbar Settings menus) showing the current
+  version and the project page link.
+* Imrpove visual quality of the SDR image display.
+
 # 0.4.0
 
 * Snipping-Tool-style default: captures no longer open the editor. They save
