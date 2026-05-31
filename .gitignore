@@ -8,3 +8,4 @@ third_party/velopack/
 *.user
 *.suo
 CMakeUserPresets.json
+.claude/
