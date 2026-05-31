@@ -1,1 +1,0 @@
-- [HDR video recording](hdr-video-recording.md) — Win+Shift+R area/full-screen HDR->SDR MP4 recording prototype
