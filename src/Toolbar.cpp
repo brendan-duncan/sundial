@@ -9,6 +9,9 @@
 #include <memory>
 #include <string>
 
+#include "Editor.h"
+#include "HdrCapture.h"
+#include "ImageOps.h"
 #include "Resource.h"
 #include "VideoRecorder.h"
 
@@ -41,12 +44,17 @@ constexpr int kIdMenuOutputFolder = 2004;
 constexpr int kIdMenuOutputFolderReset = 2005;
 
 // Video-mode control bar geometry (the window is reused as a floating bar).
+// The right region holds either the elapsed-time readout (while recording) or
+// the "Adjust look" button (while adjusting), so it's sized to the wider of
+// the two and the bar width stays fixed across phases.
 constexpr int kCbPad = 10;
 constexpr int kCbBtnW = 116;
 constexpr int kCbBtnH = 40;
 constexpr int kCbTimerW = 88;
+constexpr int kCbAdjW = 132;
+constexpr int kCbRightW = kCbAdjW > kCbTimerW ? kCbAdjW : kCbTimerW;
 constexpr int kCbH = kCbBtnH + kCbPad * 2;
-constexpr int kCbW = kCbPad * 3 + kCbBtnW + kCbTimerW;
+constexpr int kCbW = kCbPad * 3 + kCbBtnW + kCbRightW;
 constexpr int kHintW = 360;
 constexpr int kHintH = 44;
 
@@ -101,6 +109,8 @@ struct ToolbarState {
     RECT sel{};            // selection rect in monitor-client coords
     bool hasRect = false;
     bool startHover = false;
+    bool adjustHover = false;     // hover state for the "Adjust look" button
+    bool tonemapAdjusted = false; // user dialed in the look via the editor
     int countdown = 0;
     ULONGLONG recordStartTick = 0;
     std::unique_ptr<VideoRecorder> recorder;
@@ -409,6 +419,12 @@ RECT ControlBarButtonRect() {
     return {kCbPad, kCbPad, kCbPad + kCbBtnW, kCbPad + kCbBtnH};
 }
 
+// "Adjust look" button, in the right region (shown only while adjusting).
+RECT ControlBarAdjustRect() {
+    const int l = kCbPad * 2 + kCbBtnW;
+    return {l, kCbPad, l + kCbAdjW, kCbPad + kCbBtnH};
+}
+
 void FormatElapsed(wchar_t* buf, size_t n, unsigned secs) {
     swprintf_s(buf, n, L"%02u:%02u", secs / 60, secs % 60);
 }
@@ -468,18 +484,40 @@ void PaintControlBar(HWND hwnd, ToolbarState* s) {
     DrawTextW(hdc, active ? L"Stop" : L"Start", -1, &lblRc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    // Elapsed-time readout.
-    unsigned secs = 0;
-    if (recording && s->recordStartTick != 0) {
-        secs = unsigned((GetTickCount64() - s->recordStartTick) / 1000);
+    if (s->phase == VPhase::Adjust) {
+        // "Adjust look" button: open the editor on a snapshot to tune the
+        // HDR->SDR look before recording bakes it in.
+        RECT adj = ControlBarAdjustRect();
+        HBRUSH ab = CreateSolidBrush(s->adjustHover ? RGB(58, 58, 58)
+                                                    : RGB(44, 44, 44));
+        FillRect(hdc, &adj, ab);
+        DeleteObject(ab);
+        HPEN ap = CreatePen(PS_SOLID, 1, RGB(80, 80, 80));
+        HGDIOBJ oap = SelectObject(hdc, ap);
+        HGDIOBJ oab = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, adj.left, adj.top, adj.right, adj.bottom);
+        SelectObject(hdc, oab);
+        SelectObject(hdc, oap);
+        DeleteObject(ap);
+        SetTextColor(hdc, s->tonemapAdjusted ? RGB(140, 220, 140)
+                                             : RGB(240, 240, 240));
+        DrawTextW(hdc, s->tonemapAdjusted ? L"Look set" : L"Adjust look...",
+                  -1, &adj,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    } else {
+        // Elapsed-time readout.
+        unsigned secs = 0;
+        if (recording && s->recordStartTick != 0) {
+            secs = unsigned((GetTickCount64() - s->recordStartTick) / 1000);
+        }
+        wchar_t timeBuf[16];
+        FormatElapsed(timeBuf, 16, secs);
+        if (recording) SetTextColor(hdc, kRecordRed);
+        RECT timeRc = {kCbPad * 2 + kCbBtnW, kCbPad, client.right - kCbPad,
+                       client.bottom - kCbPad};
+        DrawTextW(hdc, timeBuf, -1, &timeRc,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
-    wchar_t timeBuf[16];
-    FormatElapsed(timeBuf, 16, secs);
-    if (recording) SetTextColor(hdc, kRecordRed);
-    RECT timeRc = {kCbPad * 2 + kCbBtnW, kCbPad, client.right - kCbPad,
-                   client.bottom - kCbPad};
-    DrawTextW(hdc, timeBuf, -1, &timeRc,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, oldFont);
     DeleteObject(font);
 
@@ -532,7 +570,8 @@ void BeginRecording(HWND bar, ToolbarState* s) {
     if (s->dimHwnd) SetDimRecordingMode(s->dimHwnd);
 
     s->recorder = std::make_unique<VideoRecorder>();
-    if (!s->recorder->Start(region, s->videoPath, *s->settings)) {
+    if (!s->recorder->Start(region, s->videoPath, *s->settings,
+                            /*tonemapPreseeded=*/s->tonemapAdjusted)) {
         const std::string err = s->recorder->Error();
         MessageBoxA(bar, err.empty() ? "Could not start recording"
                                      : err.c_str(),
@@ -563,6 +602,61 @@ void StopAndFinish(HWND bar, ToolbarState* s) {
         s->kind = ToolbarResult::Kind::VideoRecorded;
     }
     PostMessageW(bar, WM_CLOSE, 0, 0);
+}
+
+// "Adjust look" pressed: snapshot the selected region and open the file-less
+// look-picker editor so the user can dial in the HDR->SDR conversion before
+// recording bakes it in. The chosen params are stored back into the live
+// settings; BeginRecording then hands them to the recorder verbatim.
+void OnAdjustLook(HWND bar, ToolbarState* s) {
+    if (s->phase != VPhase::Adjust) return;
+
+    const RECT sel = s->sel;  // monitor-client coords == primary-monitor px
+    const uint32_t w = uint32_t(std::max<LONG>(1, sel.right - sel.left));
+    const uint32_t h = uint32_t(std::max<LONG>(1, sel.bottom - sel.top));
+
+    // Capture a snapshot first: our overlay + control bar are excluded from
+    // capture, so they don't show up even though they're still visible here.
+    Frame snap;
+    try {
+        snap = Crop(CaptureFullScreen(),
+                    uint32_t(std::max<LONG>(0, sel.left)),
+                    uint32_t(std::max<LONG>(0, sel.top)), w, h);
+    } catch (const std::exception& e) {
+        MessageBoxA(bar, e.what(), "Sundial - couldn't snapshot the region",
+                    MB_ICONERROR);
+        return;
+    }
+
+    // Seed the tonemap as a screenshot of this region would, then let the user
+    // tune it. On a re-open we keep the look the user already dialed in rather
+    // than reseeding the per-display anchors over their tweaks.
+    AppSettings tmp = *s->settings;
+    if (!s->tonemapAdjusted) SeedTonemapForFrame(tmp.tonemap, snap);
+
+    // Hide our topmost chrome so the editor isn't stuck behind it.
+    if (s->dimHwnd) ShowWindow(s->dimHwnd, SW_HIDE);
+    ShowWindow(bar, SW_HIDE);
+
+    EditorResult r = RunEditor(snap, tmp, L"", /*tonemapOnly=*/true);
+    if (r.saved) {
+        s->settings->tonemap = r.updatedSettings.tonemap;
+        s->tonemapAdjusted = true;
+    }
+
+    // Restore the overlay + control bar and reassert their topmost z-order.
+    if (s->dimHwnd) {
+        ShowWindow(s->dimHwnd, SW_SHOW);
+        SetWindowPos(s->dimHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    ShowWindow(bar, SW_SHOW);
+    SetWindowPos(bar, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetForegroundWindow(bar);
+    s->adjustHover = false;
+    if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    InvalidateRect(bar, nullptr, FALSE);
 }
 
 // Start/Stop button pressed in the control bar.
@@ -773,11 +867,14 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEMOVE: {
             if (!s) return 0;
             if (s->phase != VPhase::None && s->hasRect) {
+                POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                 RECT btn = ControlBarButtonRect();
-                bool h = PtInRect(&btn, POINT{GET_X_LPARAM(lp),
-                                              GET_Y_LPARAM(lp)});
-                if (h != s->startHover) {
+                bool h = PtInRect(&btn, pt);
+                RECT adj = ControlBarAdjustRect();
+                bool ah = s->phase == VPhase::Adjust && PtInRect(&adj, pt);
+                if (h != s->startHover || ah != s->adjustHover) {
                     s->startHover = h;
+                    s->adjustHover = ah;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
                     TrackMouseEvent(&tme);
@@ -799,6 +896,7 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (s) {
                 s->hoveredId = 0;
                 s->startHover = false;
+                s->adjustHover = false;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
@@ -806,10 +904,14 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!s) return 0;
             if (s->phase != VPhase::None) {
                 if (s->hasRect) {
+                    POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                     RECT btn = ControlBarButtonRect();
-                    if (PtInRect(&btn,
-                                 POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)})) {
+                    RECT adj = ControlBarAdjustRect();
+                    if (PtInRect(&btn, pt)) {
                         OnControlButton(hwnd, s);
+                    } else if (s->phase == VPhase::Adjust &&
+                               PtInRect(&adj, pt)) {
+                        OnAdjustLook(hwnd, s);
                     }
                 }
                 return 0;

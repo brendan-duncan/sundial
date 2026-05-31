@@ -137,49 +137,8 @@ void SaveAndNotify(const sundial::Frame& frame,
                        std::move(thumb), thumbW, thumbH);
 }
 
-// Seed tonemap values from the captured frame so each capture starts from a
-// configuration matched to Windows Game Bar's HDR-to-SDR conversion. The
-// user can still override every slider in the editor; on no-edit captures
-// these auto-seeded values are what get applied.
-//
-// For HDR frames (mirrors Game Bar):
-//  - sdrWhiteNits = OS-reported SDR white level (from Settings > Display >
-//    HDR > "SDR content brightness"). This is exactly what Game Bar uses as
-//    its SDR anchor; AutoSdrWhite content estimation isn't part of that
-//    behavior, so we leave it as a manual override in the editor.
-//  - sourcePeakNits = display MaxLuminance from DXGI (EDID-reported peak),
-//    clamped to a sane BT.2390 range. Defines the upper end of the curve.
-//  - highlightRolloff and gamutCompress stay at 0: BT.2390 already does a
-//    smooth roll-off and the luminance-only scaling keeps colors in gamut.
-//    These knobs only help with the per-channel curves (ACES/Hable/Neutral).
-//
-// For SDR frames we force the HDR-only knobs back to "off" and pull
-// sourcePeakNits down to 80 so BT.2390 behaves as identity on SDR data
-// (target peak == source peak ⇒ knee start at 1.0 ⇒ passthrough).
-void SeedTonemapForFrame(sundial::TonemapParams& tm,
-                         const sundial::Frame& frame) {
-    if (frame.isHdr) {
-        const float os = frame.sdrWhiteLevelNits > 0.0f
-                             ? frame.sdrWhiteLevelNits
-                             : 200.0f;
-        tm.sdrWhiteNits = std::clamp(os, 40.0f, 400.0f);
-        const float peak = frame.maxLuminanceNits > 0.0f
-                               ? frame.maxLuminanceNits
-                               : 1000.0f;
-        tm.sourcePeakNits = std::clamp(peak, 400.0f, 4000.0f);
-        tm.highlightRolloff = 0.0f;
-        tm.gamutCompress = 0.0f;
-    } else {
-        tm.sdrWhiteNits = 80.0f;       // scRGB 1.0 = 80 nits, no rescale
-        tm.exposureEV = 0.0f;
-        tm.sourcePeakNits = 80.0f;     // BT.2390 becomes identity
-        tm.highlightRolloff = 0.0f;
-        tm.gamutCompress = 0.0f;
-    }
-}
-
 void HandleCapture(sundial::AppSettings& settings, sundial::Frame frame) {
-    SeedTonemapForFrame(settings.tonemap, frame);
+    sundial::SeedTonemapForFrame(settings.tonemap, frame);
     if (settings.editOnCapture) {
         auto result = sundial::RunEditor(frame, settings);
         if (!result.saved) return;
@@ -297,7 +256,7 @@ void EditExistingFile(sundial::AppSettings& settings,
     // SDR PNG doesn't inherit HDR-tuned values from the previous edit
     // session (and vice versa). LoadFrameFromFile doesn't populate display
     // metadata, so AutoSdrWhite uses the file's content distribution alone.
-    SeedTonemapForFrame(settings.tonemap, frame);
+    sundial::SeedTonemapForFrame(settings.tonemap, frame);
     // Pre-fill the editor's Save target with the original file's path
     // (forcing a .png extension since the SDR output is always PNG).
     // Save then overwrites the original in place; Save As still opens a

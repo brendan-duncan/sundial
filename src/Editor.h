@@ -21,7 +21,14 @@ struct EditorResult {
 // `defaultSavePath` is the path the Save button writes to (overwrites in
 // place) and the path the Save As dialog defaults to. Pass an empty string
 // for a fresh capture - Save will then use Pictures\Sundial\sundial_<ts>.png.
+//
+// When `tonemapOnly` is true the editor runs as a look-picker: no file is
+// produced, the crop/resize controls are hidden, and the output buttons become
+// "Use these settings" / "Cancel". On confirm, `saved` is true and only
+// `updatedSettings.tonemap` is meaningful (no editedFrame/outputPath). Used by
+// the video recorder to dial in the HDR->SDR look before recording bakes it in.
 EditorResult RunEditor(const Frame& source, const AppSettings& settings,
-                       const std::wstring& defaultSavePath = L"");
+                       const std::wstring& defaultSavePath = L"",
+                       bool tonemapOnly = false);
 
 }  // namespace sundial

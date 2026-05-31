@@ -162,6 +162,10 @@ struct EditorContext {
     const Frame* source = nullptr;
     ShaderTonemap tonemap;
 
+    // Look-picker mode: no file output, crop/resize hidden, confirm button
+    // reads "Use these settings". Set by RunEditor's tonemapOnly argument.
+    bool tonemapOnly = false;
+
     // True when the monitor containing the editor is in HDR mode; turns on
     // the FP16 scRGB swap chain + custom ImGui pixel shader so the preview
     // can carry real HDR brightness.
@@ -675,6 +679,23 @@ bool EditsMade(const EditorContext& ctx) {
 
 void DrawOutputSection(EditorContext& ctx) {
     const ImVec2 kBtn(142, 30);
+
+    // Look-picker mode (video recording): just confirm or cancel the tonemap
+    // params; there's no still to save/copy.
+    if (ctx.tonemapOnly) {
+        if (IconButton("use", "Use these settings", IconKind::Save,
+                       ImVec2(200, 30))) {
+            ctx.result.saved = true;
+            ctx.exitRequested = true;
+        }
+        ImGui::SameLine();
+        if (IconButton("cancel", "Cancel", IconKind::Cancel, kBtn)) {
+            ctx.result.saved = false;
+            ctx.exitRequested = true;
+        }
+        return;
+    }
+
     if (IconButton("save", "Save", IconKind::Save, kBtn)) {
         DoSave(ctx);
     }
@@ -812,41 +833,45 @@ void DrawSidebar(EditorContext& ctx) {
         ctx.params = TonemapParams{};
     }
 
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("Crop");
-    ImGui::TextDisabled("Drag on the preview to redraw the crop.");
-    ImGui::Separator();
-    const int maxW = int(ctx.source->width);
-    const int maxH = int(ctx.source->height);
-    ImGui::DragInt("X", &ctx.cropX, 1, 0, maxW - 1);
-    ImGui::DragInt("Y", &ctx.cropY, 1, 0, maxH - 1);
-    ImGui::DragInt("Width", &ctx.cropW, 1, 1, maxW - ctx.cropX);
-    ImGui::DragInt("Height", &ctx.cropH, 1, 1, maxH - ctx.cropY);
-    if (ImGui::Button("Reset crop")) {
-        ctx.cropX = ctx.cropY = 0;
-        ctx.cropW = maxW;
-        ctx.cropH = maxH;
-    }
+    // Crop/resize only apply when producing a still. In look-picker mode the
+    // recording region is already chosen, so these are hidden.
+    if (!ctx.tonemapOnly) {
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::TextUnformatted("Crop");
+        ImGui::TextDisabled("Drag on the preview to redraw the crop.");
+        ImGui::Separator();
+        const int maxW = int(ctx.source->width);
+        const int maxH = int(ctx.source->height);
+        ImGui::DragInt("X", &ctx.cropX, 1, 0, maxW - 1);
+        ImGui::DragInt("Y", &ctx.cropY, 1, 0, maxH - 1);
+        ImGui::DragInt("Width", &ctx.cropW, 1, 1, maxW - ctx.cropX);
+        ImGui::DragInt("Height", &ctx.cropH, 1, 1, maxH - ctx.cropY);
+        if (ImGui::Button("Reset crop")) {
+            ctx.cropX = ctx.cropY = 0;
+            ctx.cropW = maxW;
+            ctx.cropH = maxH;
+        }
 
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("Resize");
-    ImGui::Separator();
-    ImGui::Checkbox("Lock aspect", &ctx.resizeLockAspect);
-    int prevW = ctx.resizeW;
-    int prevH = ctx.resizeH;
-    if (ImGui::DragInt("Out width", &ctx.resizeW, 1, 1, 16384)) {
-        if (ctx.resizeLockAspect && prevW > 0) {
-            ctx.resizeH = std::max(1, int(ctx.resizeW / ctx.aspect + 0.5f));
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::TextUnformatted("Resize");
+        ImGui::Separator();
+        ImGui::Checkbox("Lock aspect", &ctx.resizeLockAspect);
+        int prevW = ctx.resizeW;
+        int prevH = ctx.resizeH;
+        if (ImGui::DragInt("Out width", &ctx.resizeW, 1, 1, 16384)) {
+            if (ctx.resizeLockAspect && prevW > 0) {
+                ctx.resizeH = std::max(1, int(ctx.resizeW / ctx.aspect + 0.5f));
+            }
         }
-    }
-    if (ImGui::DragInt("Out height", &ctx.resizeH, 1, 1, 16384)) {
-        if (ctx.resizeLockAspect && prevH > 0) {
-            ctx.resizeW = std::max(1, int(ctx.resizeH * ctx.aspect + 0.5f));
+        if (ImGui::DragInt("Out height", &ctx.resizeH, 1, 1, 16384)) {
+            if (ctx.resizeLockAspect && prevH > 0) {
+                ctx.resizeW = std::max(1, int(ctx.resizeH * ctx.aspect + 0.5f));
+            }
         }
-    }
-    if (ImGui::Button("Reset size")) {
-        ctx.resizeW = maxW;
-        ctx.resizeH = maxH;
+        if (ImGui::Button("Reset size")) {
+            ctx.resizeW = maxW;
+            ctx.resizeH = maxH;
+        }
     }
 
     ImGui::EndChild();  // sidebar_scroll
@@ -855,6 +880,8 @@ void DrawSidebar(EditorContext& ctx) {
 
 void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
                                    float h, bool interactive) {
+    // No crop in look-picker mode: the recording region is already fixed.
+    if (ctx.tonemapOnly) return;
     const float scaleX = w / float(ctx.source->width);
     const float scaleY = h / float(ctx.source->height);
 
@@ -1173,9 +1200,10 @@ void DrawCloseConfirmPopup(EditorContext& ctx) {
 }  // namespace
 
 EditorResult RunEditor(const Frame& source, const AppSettings& settings,
-                       const std::wstring& defaultSavePath) {
+                       const std::wstring& defaultSavePath, bool tonemapOnly) {
     EditorContext ctx;
     ctx.source = &source;
+    ctx.tonemapOnly = tonemapOnly;
     ctx.defaultSavePath = defaultSavePath;
     ctx.outputFolder = settings.outputFolder;
     ctx.result.updatedSettings = settings;
@@ -1199,7 +1227,9 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     ctx.clientH = initH;
 
     ctx.hwnd = CreateWindowExW(
-        0, kClassName, L"Sundial - HDR to SDR Editor",
+        0, kClassName,
+        tonemapOnly ? L"Sundial - Recording HDR to SDR Look"
+                    : L"Sundial - HDR to SDR Editor",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, initW, initH,
         nullptr, nullptr, GetModuleHandleW(nullptr), &ctx);
@@ -1292,11 +1322,13 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
             const bool s = ImGui::IsKeyPressed(ImGuiKey_S, false);
             const bool x = ImGui::IsKeyPressed(ImGuiKey_X, false);
             if (ctrl && !shift && s) {
-                ctx.result.outputPath =
-                    DefaultSavePath(ctx.defaultSavePath, ctx.outputFolder);
+                if (!ctx.tonemapOnly) {
+                    ctx.result.outputPath =
+                        DefaultSavePath(ctx.defaultSavePath, ctx.outputFolder);
+                }
                 ctx.result.saved = true;
                 ctx.exitRequested = true;
-            } else if (ctrl && shift && x) {
+            } else if (ctrl && shift && x && !ctx.tonemapOnly) {
                 std::wstring path = PickSaveAsPath(ctx.hwnd,
                                                    ctx.defaultSavePath,
                                                    ctx.outputFolder);
@@ -1321,7 +1353,8 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) &&
             !ImGui::GetIO().WantTextInput &&
             !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
-            if (EditsMade(ctx)) {
+            // Look-picker mode has nothing to save, so Esc just cancels.
+            if (!ctx.tonemapOnly && EditsMade(ctx)) {
                 ctx.closeConfirmPending = true;
             } else {
                 ctx.result.saved = false;
@@ -1357,7 +1390,10 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     if (ctx.result.saved) {
         ctx.result.updatedSettings.tonemap = ctx.params;
         ctx.result.updatedSettings.saveHdrJxr = ctx.saveHdrJxr;
-        ctx.result.editedFrame = ProduceEditedFrame(ctx);
+        // Look-picker mode returns params only; no still is produced.
+        if (!ctx.tonemapOnly) {
+            ctx.result.editedFrame = ProduceEditedFrame(ctx);
+        }
     }
 
     ImGui_ImplDX11_Shutdown();

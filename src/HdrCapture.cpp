@@ -1,11 +1,14 @@
 #include "HdrCapture.h"
 
+#include "Settings.h"
+
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi1_6.h>
 #include <wingdi.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -236,6 +239,41 @@ Frame CaptureFullScreen() {
     dup->ReleaseFrame();
 
     return frame;
+}
+
+// Seed tonemap values from the captured frame so each capture starts from a
+// configuration matched to Windows Game Bar's HDR-to-SDR conversion. The user
+// can still override every slider in the editor; on no-edit captures these
+// auto-seeded values are what get applied.
+//
+// For HDR frames (mirrors Game Bar):
+//  - sdrWhiteNits = OS-reported SDR white level (Settings > Display > HDR >
+//    "SDR content brightness"), exactly what Game Bar uses as its SDR anchor.
+//  - sourcePeakNits = display MaxLuminance from DXGI (EDID-reported peak),
+//    clamped to a sane BT.2390 range. Defines the upper end of the curve.
+//  - highlightRolloff and gamutCompress stay at 0: BT.2390 already does a
+//    smooth roll-off and the luminance-only scaling keeps colors in gamut.
+//
+// For SDR frames we force the HDR-only knobs back to "off" and pull
+// sourcePeakNits down to 80 so BT.2390 behaves as identity on SDR data
+// (target peak == source peak => knee start at 1.0 => passthrough).
+void SeedTonemapForFrame(TonemapParams& tm, const Frame& frame) {
+    if (frame.isHdr) {
+        const float os =
+            frame.sdrWhiteLevelNits > 0.0f ? frame.sdrWhiteLevelNits : 200.0f;
+        tm.sdrWhiteNits = std::clamp(os, 40.0f, 400.0f);
+        const float peak =
+            frame.maxLuminanceNits > 0.0f ? frame.maxLuminanceNits : 1000.0f;
+        tm.sourcePeakNits = std::clamp(peak, 400.0f, 4000.0f);
+        tm.highlightRolloff = 0.0f;
+        tm.gamutCompress = 0.0f;
+    } else {
+        tm.sdrWhiteNits = 80.0f;       // scRGB 1.0 = 80 nits, no rescale
+        tm.exposureEV = 0.0f;
+        tm.sourcePeakNits = 80.0f;     // BT.2390 becomes identity
+        tm.highlightRolloff = 0.0f;
+        tm.gamutCompress = 0.0f;
+    }
 }
 
 }  // namespace sundial

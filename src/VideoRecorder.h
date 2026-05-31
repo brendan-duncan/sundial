@@ -33,8 +33,14 @@ public:
     // curve/look knobs are taken from `settings.tonemap`; per-display anchors
     // (SDR white level, source peak) are seeded from the captured display the
     // same way screenshots are. Returns false if capture/encoder setup failed.
+    //
+    // Pass `tonemapPreseeded = true` when `settings.tonemap` already holds a
+    // display-seeded look the user dialed in (e.g. via the toolbar's "Adjust
+    // look" editor): the recorder then uses those params verbatim instead of
+    // re-seeding the per-display anchors. Local tonemap is still forced off
+    // (the recorder has no mip chain for it).
     bool Start(const RECT& region, const std::wstring& outputPath,
-               const AppSettings& settings);
+               const AppSettings& settings, bool tonemapPreseeded = false);
 
     // Stop recording, finalize the MP4, and join the worker. Safe to call once.
     // Returns true if the file was written without a fatal error.
@@ -46,7 +52,8 @@ public:
     const std::string& Error() const { return error_; }
 
 private:
-    void Run(RECT region, std::wstring outputPath, AppSettings settings);
+    void Run(RECT region, std::wstring outputPath, AppSettings settings,
+             bool tonemapPreseeded);
 
     std::thread worker_;
     std::atomic<bool> running_{false};

@@ -15,6 +15,16 @@ struct Frame {
     std::vector<uint8_t> pixels;  // tightly packed, row-major
 };
 
+struct TonemapParams;  // Settings.h
+
 Frame CaptureFullScreen();
+
+// Seed display-dependent tonemap anchors from a freshly captured/loaded frame
+// so each capture starts matched to Windows Game Bar's HDR-to-SDR conversion:
+// HDR sources get the OS SDR-white level + EDID peak as BT.2390 anchors (HDR
+// knobs reset to 0); SDR sources are forced to an 80-nit identity passthrough.
+// The user can still override every value afterward. Shared by the screenshot,
+// edit-image, and video-recording paths so all three start from the same look.
+void SeedTonemapForFrame(TonemapParams& tm, const Frame& frame);
 
 }  // namespace sundial

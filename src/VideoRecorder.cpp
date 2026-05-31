@@ -250,13 +250,13 @@ VideoRecorder::~VideoRecorder() {
 }
 
 bool VideoRecorder::Start(const RECT& region, const std::wstring& outputPath,
-                          const AppSettings& settings) {
+                          const AppSettings& settings, bool tonemapPreseeded) {
     if (running_.load()) return false;
     error_.clear();
     stopRequested_.store(false);
     running_.store(true);
     worker_ = std::thread(&VideoRecorder::Run, this, region, outputPath,
-                          settings);
+                          settings, tonemapPreseeded);
     return true;
 }
 
@@ -268,7 +268,7 @@ bool VideoRecorder::Stop() {
 }
 
 void VideoRecorder::Run(RECT region, std::wstring outputPath,
-                        AppSettings settings) {
+                        AppSettings settings, bool tonemapPreseeded) {
     // The worker owns its own COM apartment + MF runtime + D3D device, so
     // nothing here touches the main thread's immediate context.
     const bool comInit =
@@ -351,7 +351,14 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
             rh = (srcDesc.Height - ry) & ~1u;
 
         TonemapParams tm = settings.tonemap;
-        SeedTonemapForDisplay(tm, isHdr, outDesc.MaxLuminance, sdrWhite);
+        if (tonemapPreseeded) {
+            // The look was already dialed in (and display-seeded) via the
+            // "Adjust look" editor; honor it as-is. Local tonemap still can't
+            // run here (no mip chain), so force it off regardless.
+            tm.localStrength = 0.0f;
+        } else {
+            SeedTonemapForDisplay(tm, isHdr, outDesc.MaxLuminance, sdrWhite);
+        }
 
         // GPU crop target (matches source format so CopySubresourceRegion is a
         // straight copy) and a staging texture for SDR readback.
