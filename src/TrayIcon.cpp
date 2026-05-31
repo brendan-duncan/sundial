@@ -12,6 +12,8 @@ constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kIdCapture = 3001;
 constexpr UINT kIdExit = 3002;
 constexpr UINT kIdEditImage = 3003;
+constexpr UINT kIdCheckUpdates = 3004;
+constexpr UINT kIdAbout = 3005;
 constexpr UINT kIconId = 1;
 
 void EnsureClassRegistered() {
@@ -63,6 +65,12 @@ LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case kIdEditImage:
                 if (editImage_) editImage_();
                 return 0;
+            case kIdCheckUpdates:
+                if (checkUpdates_) checkUpdates_();
+                return 0;
+            case kIdAbout:
+                if (about_) about_();
+                return 0;
             case kIdExit:
                 if (exit_) exit_();
                 return 0;
@@ -79,6 +87,12 @@ void TrayIcon::ShowContextMenu() {
     AppendMenuW(menu, MF_STRING, kIdCapture, L"Capture\tWin+Shift+X");
     AppendMenuW(menu, MF_STRING, kIdEditImage, L"Edit Image...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (checkUpdates_) {
+        AppendMenuW(menu, MF_STRING, kIdCheckUpdates, L"Check for Updates...");
+    }
+    if (about_) {
+        AppendMenuW(menu, MF_STRING, kIdAbout, L"About Sundial...");
+    }
     AppendMenuW(menu, MF_STRING, kIdExit, L"Exit");
 
     // SetForegroundWindow before TrackPopupMenu is the standard

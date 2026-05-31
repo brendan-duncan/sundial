@@ -18,6 +18,8 @@ public:
 
     void OnPrimaryAction(Handler h) { primary_ = std::move(h); }
     void OnEditImage(Handler h)     { editImage_ = std::move(h); }
+    void OnCheckUpdates(Handler h)  { checkUpdates_ = std::move(h); }
+    void OnAbout(Handler h)         { about_ = std::move(h); }
     void OnExit(Handler h)          { exit_ = std::move(h); }
 
     // Static because the WNDCLASS registration helper needs it from a
@@ -32,6 +34,8 @@ private:
     NOTIFYICONDATAW nid_{};
     Handler primary_;
     Handler editImage_;
+    Handler checkUpdates_;
+    Handler about_;
     Handler exit_;
 };
 

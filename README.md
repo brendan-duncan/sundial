@@ -4,6 +4,17 @@ Windows HDR-aware screen capture utility with support for HDR displays, includin
 
 ![Sundial HDR Editor](sundial_edit_side_by_side.png)
 
+## Installing
+
+Download the latest **Setup.exe** from the
+[Releases page](https://github.com/brendan-duncan/sundial/releases/latest) and
+run it. Sundial installs per-user (no administrator prompt) and starts in the
+tray.
+
+Sundial **updates itself**: on launch it quietly checks the Releases page for a
+newer version, downloads it in the background, and offers to restart into it —
+nothing to configure.
+
 ## Usage
 
 Sundial runs in the background and docks itself to the Windows tray.
@@ -291,3 +302,50 @@ editor only renders the HDR one when a comparison mode actually needs it.
     loop targets 30 fps.
   - `DXGI_ERROR_ACCESS_LOST` (an HDR/resolution toggle mid-recording) stops
     the recording cleanly instead of re-establishing duplication.
+
+## Releasing
+
+Releases use [Velopack](https://velopack.io) for both the installer and the
+in-app updater. The native Velopack library lives in `third_party/velopack`
+(fetched by `tools/setup-velopack.ps1`) and is not committed — the build links
+it in automatically when present and stubs the updater out when it isn't.
+
+### Automated (GitHub Actions)
+
+Pushing a version tag builds and publishes a release automatically
+([.github/workflows/release.yml](.github/workflows/release.yml)):
+
+```sh
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The workflow vendors Velopack, builds Release, and runs `vpk` to publish the
+`Setup.exe` plus full/delta packages to the GitHub Release for that tag. Because
+the in-app updater points at `releases/latest/download`, every installed copy
+finds the new version on its next launch — no extra steps. It uses the built-in
+`GITHUB_TOKEN`, so there are no secrets to configure.
+
+### Manual (local)
+
+```powershell
+dotnet tool install -g vpk          # one-time: the Velopack CLI
+
+tools\setup-velopack.ps1            # one-time: vendor the native lib
+cmake -S . -B build
+cmake --build build --config Release
+
+# pack only -> releases\Sundial-win-Setup.exe
+tools\release.ps1 -Version 1.2.0
+
+# or pack AND publish to GitHub
+tools\release.ps1 -Version 1.2.0 `
+  -RepoUrl https://github.com/brendan-duncan/sundial -Token $env:GH_PAT
+```
+
+The first `Setup.exe` is the one-time installer to hand to new users; every
+later, higher-versioned release is what existing installs auto-update to.
+
+> **Code signing:** unsigned builds trigger a SmartScreen warning on first run.
+> When you have a certificate, pass it to `vpk` via `--signParams` (wire it
+> through `tools/release.ps1`).

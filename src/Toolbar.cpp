@@ -9,10 +9,12 @@
 #include <memory>
 #include <string>
 
+#include "About.h"
 #include "Editor.h"
 #include "HdrCapture.h"
 #include "ImageOps.h"
 #include "Resource.h"
+#include "Updater.h"
 #include "VideoRecorder.h"
 
 namespace sundial {
@@ -42,6 +44,8 @@ constexpr int kIdMenuSaveHdrJxr = 2002;
 constexpr int kIdMenuAutoCopyCapture = 2003;
 constexpr int kIdMenuOutputFolder = 2004;
 constexpr int kIdMenuOutputFolderReset = 2005;
+constexpr int kIdMenuCheckUpdates = 2006;
+constexpr int kIdMenuAbout = 2007;
 
 // Video-mode control bar geometry (the window is reused as a floating bar).
 // The right region holds either the elapsed-time readout (while recording) or
@@ -770,6 +774,11 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
                     (s->settings->outputFolder.empty() ? MF_GRAYED : 0),
                 kIdMenuOutputFolderReset,
                 L"Reset Output Folder to Default");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+#ifdef SUNDIAL_HAS_UPDATER
+    AppendMenuW(menu, MF_STRING, kIdMenuCheckUpdates, L"Check for Updates...");
+#endif
+    AppendMenuW(menu, MF_STRING, kIdMenuAbout, L"About Sundial...");
 
     RECT btn = GetButtonRect(kIdSettings);
     POINT pt{btn.left, btn.bottom};
@@ -803,6 +812,18 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
         }
     } else if (cmd == kIdMenuOutputFolderReset) {
         s->settings->outputFolder.clear();
+    }
+#ifdef SUNDIAL_HAS_UPDATER
+    else if (cmd == kIdMenuCheckUpdates) {
+        // Close the toolbar first: the restart-to-update path (if the user
+        // accepts) posts WM_QUIT to this thread, and we want that to unwind
+        // the main message loop, not the toolbar's own modal loop.
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        CheckForUpdatesInBackground(/*silent=*/false, GetCurrentThreadId());
+    }
+#endif
+    else if (cmd == kIdMenuAbout) {
+        ShowAbout(hwnd);
     }
 }
 

@@ -1,6 +1,8 @@
 build/
 dist/
 out/
+releases/
+third_party/velopack/
 .vs/
 .vscode/
 *.user

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 
+#include "About.h"
 #include "Clipboard.h"
 #include "Editor.h"
 #include "Encoder.h"
@@ -20,6 +21,7 @@
 #include "Tonemap.h"
 #include "Toolbar.h"
 #include "TrayIcon.h"
+#include "Updater.h"
 
 #include <functional>
 #include <vector>
@@ -286,6 +288,11 @@ void RunEditImageFlow(sundial::AppSettings& settings) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // Must run before anything else: handles Velopack's install/update hooks
+    // (and exits the process in those cases). A no-op on a normal launch, and
+    // compiled out entirely when the updater isn't vendored.
+    sundial::InitUpdater();
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -358,8 +365,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     sundial::TrayIcon tray;
     tray.OnPrimaryAction(runFlow);
     tray.OnEditImage([&] { RunEditImageFlow(settings); });
+#ifdef SUNDIAL_HAS_UPDATER
+    // Only offered when the updater is compiled in. Non-silent: reports
+    // "up to date" / errors too, since the user asked explicitly.
+    tray.OnCheckUpdates([] {
+        sundial::CheckForUpdatesInBackground(/*silent=*/false, g_mainThreadId);
+    });
+#endif
+    tray.OnAbout([] { sundial::ShowAbout(nullptr); });
     tray.OnExit([] { PostQuitMessage(0); });
     tray.Initialize(L"Sundial  -  Win+Shift+X");
+
+    // Check for a newer release in the background. Silent unless an update is
+    // actually downloaded (then it prompts to restart). Posts WM_QUIT to this
+    // thread to exit cleanly before applying.
+    sundial::CheckForUpdatesInBackground(/*silent=*/true, g_mainThreadId);
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(sundial LANGUAGES CXX)
+project(sundial VERSION 1.0.0 LANGUAGES CXX)
+
+# App version shown in the About box. Defaults to the project() version; CI and
+# tools/release.ps1 override it with the release tag (-DSUNDIAL_VERSION=x.y.z).
+set(SUNDIAL_VERSION "${PROJECT_VERSION}" CACHE STRING "Sundial version string")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,6 +50,8 @@ add_executable(sundial WIN32
   src/Editor.cpp
   src/TrayIcon.cpp
   src/ShellIntegration.cpp
+  src/Updater.cpp
+  src/About.cpp
   src/sundial.rc
 )
 
@@ -73,8 +79,43 @@ target_link_libraries(sundial PRIVATE
 target_compile_definitions(sundial PRIVATE
   UNICODE _UNICODE
   WIN32_LEAN_AND_MEAN NOMINMAX
+  SUNDIAL_VERSION="${SUNDIAL_VERSION}"
 )
 
 if(MSVC)
   target_compile_options(sundial PRIVATE /W4 /permissive- /Zc:__cplusplus)
+endif()
+
+# --- Auto-update support (Velopack) -----------------------------------------
+# Enabled automatically once velopack_libc has been vendored into
+# third_party/velopack. Fetch it with:  pwsh tools/setup-velopack.ps1
+# Until then the app builds exactly as before, with the updater stubbed out.
+option(SUNDIAL_ENABLE_UPDATER "Enable Velopack auto-update support" ON)
+
+set(VELOPACK_DIR "${CMAKE_SOURCE_DIR}/third_party/velopack")
+if(SUNDIAL_ENABLE_UPDATER AND EXISTS "${VELOPACK_DIR}/include")
+  file(GLOB VELOPACK_LIBS "${VELOPACK_DIR}/lib/*.lib")
+  if(VELOPACK_LIBS)
+    message(STATUS "Sundial: Velopack updater enabled (${VELOPACK_DIR})")
+    target_compile_definitions(sundial PRIVATE SUNDIAL_HAS_UPDATER=1)
+    target_include_directories(sundial PRIVATE "${VELOPACK_DIR}/include")
+    target_link_libraries(sundial PRIVATE ${VELOPACK_LIBS})
+
+    # Copy the velopack_libc DLL next to the exe so it's found at runtime.
+    file(GLOB VELOPACK_DLLS "${VELOPACK_DIR}/bin/*.dll")
+    foreach(_dll ${VELOPACK_DLLS})
+      add_custom_command(TARGET sundial POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_dll}" "$<TARGET_FILE_DIR:sundial>")
+    endforeach()
+  else()
+    message(WARNING
+      "Sundial: third_party/velopack/include found but no lib/*.lib. "
+      "Re-run tools/setup-velopack.ps1. Building without the updater.")
+  endif()
+else()
+  message(STATUS
+    "Sundial: Velopack updater NOT enabled "
+    "(run tools/setup-velopack.ps1 to fetch velopack_libc). "
+    "Building with the updater stubbed out.")
 endif()

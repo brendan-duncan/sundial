@@ -1,36 +1,51 @@
 name: Release
 
+# Build and publish a Velopack release whenever a version tag is pushed.
+#   git tag v1.2.0
+#   git push origin v1.2.0
+#
+# Produces the Setup.exe + full/delta packages and publishes them to the GitHub
+# Release for that tag. Sundial's in-app updater points at
+# releases/latest/download, so installed copies pick the new version up on their
+# next launch.
+
 on:
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: write   # allow the workflow to create/update GitHub Releases
 
 jobs:
-  build:
+  release:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
-
-      - name: Build
-        run: cmake --build build --config Release
-
-      - name: Stage exe
+      - name: Derive version from tag
+        id: ver
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item build/Release/sundial.exe dist/sundial.exe
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          "version=$v" >> $env:GITHUB_OUTPUT
 
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/sundial.exe
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+      - name: Vendor Velopack native library
+        shell: pwsh
+        run: ./tools/setup-velopack.ps1 -Version 1.1.1 -Arch x64
+
+      - name: Install vpk
+        shell: pwsh
+        run: |
+          dotnet tool install -g vpk
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      # release.ps1 configures + builds Release (baking in the version), then
+      # packs and publishes via vpk.
+      - name: Build, pack, and publish
+        shell: pwsh
+        run: >
+          ./tools/release.ps1
+          -Version ${{ steps.ver.outputs.version }}
+          -RepoUrl https://github.com/${{ github.repository }}
+          -Token ${{ secrets.GITHUB_TOKEN }}
