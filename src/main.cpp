@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 
+#include "Clipboard.h"
 #include "Editor.h"
 #include "Encoder.h"
 #include "HdrCapture.h"
@@ -20,8 +21,16 @@
 #include "Toolbar.h"
 #include "TrayIcon.h"
 
-#include <cstring>
+#include <functional>
 #include <vector>
+
+namespace {
+// Posted by a screenshot toast (from its own thread) back to the main thread
+// when the user clicks the preview, asking the main loop to open the editor
+// on the saved file. LPARAM is a heap wchar_t* path the handler frees.
+constexpr UINT kMsgEditFile = WM_APP + 1;
+DWORD g_mainThreadId = 0;
+}  // namespace
 
 namespace {
 
@@ -78,51 +87,6 @@ std::wstring Timestamp() {
     return buf;
 }
 
-bool CopyBgra8ToClipboard(const std::vector<uint8_t>& bgra, uint32_t width,
-                          uint32_t height) {
-    if (!OpenClipboard(nullptr)) return false;
-    EmptyClipboard();
-    const size_t imgSize = bgra.size();
-    HGLOBAL hMem =
-        GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPV5HEADER) + imgSize);
-    if (!hMem) {
-        CloseClipboard();
-        return false;
-    }
-    auto* hdr = static_cast<BITMAPV5HEADER*>(GlobalLock(hMem));
-    ZeroMemory(hdr, sizeof(BITMAPV5HEADER));
-    hdr->bV5Size = sizeof(BITMAPV5HEADER);
-    hdr->bV5Width = int(width);
-    hdr->bV5Height = -int(height);   // top-down rows
-    hdr->bV5Planes = 1;
-    hdr->bV5BitCount = 32;
-    hdr->bV5Compression = BI_BITFIELDS;
-    hdr->bV5SizeImage = uint32_t(imgSize);
-    hdr->bV5RedMask   = 0x00FF0000;
-    hdr->bV5GreenMask = 0x0000FF00;
-    hdr->bV5BlueMask  = 0x000000FF;
-    hdr->bV5AlphaMask = 0xFF000000;
-    hdr->bV5CSType = LCS_sRGB;
-    hdr->bV5Intent = LCS_GM_GRAPHICS;
-    std::memcpy(reinterpret_cast<uint8_t*>(hdr) + sizeof(BITMAPV5HEADER),
-                bgra.data(), imgSize);
-    GlobalUnlock(hMem);
-    if (!SetClipboardData(CF_DIBV5, hMem)) {
-        GlobalFree(hMem);
-        CloseClipboard();
-        return false;
-    }
-    CloseClipboard();
-    return true;
-}
-
-void CopyFrameToClipboard(const sundial::Frame& frame,
-                          const sundial::TonemapParams& tonemap) {
-    std::vector<uint8_t> bgra =
-        frame.isHdr ? sundial::TonemapToBgra8(frame, tonemap) : frame.pixels;
-    CopyBgra8ToClipboard(bgra, frame.width, frame.height);
-}
-
 void SaveAndNotify(const sundial::Frame& frame,
                    const sundial::TonemapParams& tonemap,
                    bool saveHdrJxr,
@@ -150,12 +114,26 @@ void SaveAndNotify(const sundial::Frame& frame,
         title = L"Saved  -  " + stem + L".png";
         selectInExplorer = png.wstring();
     }
-    const std::wstring body = dir + L"\n(click to open in Explorer)";
+    const std::wstring body = dir + L"\n(click the preview to edit)";
 
     uint32_t thumbW = 0, thumbH = 0;
     std::vector<uint8_t> thumb = MakeToastThumbnail(frame, tonemap,
                                                     thumbW, thumbH);
-    sundial::ShowToast(title, body, selectInExplorer,
+
+    // Clicking the toast re-opens the saved file in the editor (the JXR when
+    // we kept one, so re-toning starts from the full HDR data; otherwise the
+    // PNG). The toast lives on its own thread, so marshal back to the main
+    // thread - the editor is modal and must run there.
+    const std::wstring editPath = selectInExplorer;
+    auto onClick = [editPath] {
+        wchar_t* heapPath = _wcsdup(editPath.c_str());
+        if (!heapPath) return;
+        if (!PostThreadMessageW(g_mainThreadId, kMsgEditFile, 0,
+                                reinterpret_cast<LPARAM>(heapPath))) {
+            free(heapPath);
+        }
+    };
+    sundial::ShowToast(title, body, std::move(onClick),
                        std::move(thumb), thumbW, thumbH);
 }
 
@@ -211,7 +189,7 @@ void HandleCapture(sundial::AppSettings& settings, sundial::Frame frame) {
         SaveAndNotify(result.editedFrame, settings.tonemap,
                       settings.saveHdrJxr, result.outputPath);
         if (settings.autoCopyCapture) {
-            CopyFrameToClipboard(result.editedFrame, settings.tonemap);
+            sundial::CopyFrameToClipboard(result.editedFrame, settings.tonemap);
         }
     } else {
         const auto base =
@@ -219,7 +197,7 @@ void HandleCapture(sundial::AppSettings& settings, sundial::Frame frame) {
         const std::wstring png = base.wstring() + L".png";
         SaveAndNotify(frame, settings.tonemap, settings.saveHdrJxr, png);
         if (settings.autoCopyCapture) {
-            CopyFrameToClipboard(frame, settings.tonemap);
+            sundial::CopyFrameToClipboard(frame, settings.tonemap);
         }
     }
 }
@@ -265,13 +243,20 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
     }
 }
 
-// Toast for a finished screen recording (path is the saved .mp4).
+// Toast for a finished screen recording (path is the saved .mp4). Recordings
+// aren't editable, so clicking opens Explorer at the file (done on the toast's
+// own thread, which is fine for ShellExecute).
 void NotifyVideoSaved(const std::wstring& videoPath) {
     std::filesystem::path p = videoPath;
+    auto onClick = [videoPath] {
+        const std::wstring args = L"/select,\"" + videoPath + L"\"";
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr,
+                      SW_SHOWNORMAL);
+    };
     sundial::ShowToast(L"Recording saved  -  " + p.filename().wstring(),
                        p.parent_path().wstring() +
                            L"\n(click to open in Explorer)",
-                       videoPath);
+                       std::move(onClick));
 }
 
 std::wstring GetExePath() {
@@ -399,6 +384,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
+    g_mainThreadId = GetCurrentThreadId();
     sundial::AppSettings settings = sundial::LoadSettings();
 
     auto runFlow = [&] {
@@ -420,6 +406,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         if (msg.message == WM_HOTKEY && msg.wParam == kHotkeyToolbar) {
             runFlow();
+        } else if (msg.message == kMsgEditFile) {
+            // A screenshot toast was clicked: open the editor on the saved
+            // file. The path was heap-allocated by the toast callback.
+            wchar_t* heapPath = reinterpret_cast<wchar_t*>(msg.lParam);
+            if (heapPath) {
+                std::wstring path(heapPath);
+                free(heapPath);
+                try {
+                    EditExistingFile(settings, path);
+                } catch (const std::exception& e) {
+                    MessageBoxA(nullptr, e.what(), "Sundial edit failed",
+                                MB_ICONERROR);
+                }
+            }
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

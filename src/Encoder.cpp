@@ -6,6 +6,7 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <cstring>
 #include <stdexcept>
 #include <system_error>
 
@@ -27,25 +28,20 @@ ComPtr<IWICImagingFactory> CreateWic() {
     return factory;
 }
 
-void WriteImage(const std::wstring& path,
-                REFGUID containerFormat,
-                REFWICPixelFormatGUID pixelFormat,
-                uint32_t width, uint32_t height,
-                uint32_t stride,
-                const uint8_t* pixels,
-                size_t pixelBytes,
-                bool jxrHdr) {
+void EncodeToStream(IStream* stream,
+                    REFGUID containerFormat,
+                    REFWICPixelFormatGUID pixelFormat,
+                    uint32_t width, uint32_t height,
+                    uint32_t stride,
+                    const uint8_t* pixels,
+                    size_t pixelBytes,
+                    bool jxrHdr) {
     auto factory = CreateWic();
-
-    ComPtr<IWICStream> stream;
-    ThrowIfFailed(factory->CreateStream(&stream), "WIC CreateStream");
-    ThrowIfFailed(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE),
-                  "IWICStream::InitializeFromFilename");
 
     ComPtr<IWICBitmapEncoder> encoder;
     ThrowIfFailed(factory->CreateEncoder(containerFormat, nullptr, &encoder),
                   "WIC CreateEncoder");
-    ThrowIfFailed(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache),
+    ThrowIfFailed(encoder->Initialize(stream, WICBitmapEncoderNoCache),
                   "IWICBitmapEncoder::Initialize");
 
     ComPtr<IWICBitmapFrameEncode> frame;
@@ -85,7 +81,51 @@ void WriteImage(const std::wstring& path,
     ThrowIfFailed(encoder->Commit(), "IWICBitmapEncoder::Commit");
 }
 
+void WriteImage(const std::wstring& path,
+                REFGUID containerFormat,
+                REFWICPixelFormatGUID pixelFormat,
+                uint32_t width, uint32_t height,
+                uint32_t stride,
+                const uint8_t* pixels,
+                size_t pixelBytes,
+                bool jxrHdr) {
+    auto factory = CreateWic();
+    ComPtr<IWICStream> stream;
+    ThrowIfFailed(factory->CreateStream(&stream), "WIC CreateStream");
+    ThrowIfFailed(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE),
+                  "IWICStream::InitializeFromFilename");
+    EncodeToStream(stream.Get(), containerFormat, pixelFormat, width, height,
+                   stride, pixels, pixelBytes, jxrHdr);
+}
+
 }  // namespace
+
+std::vector<uint8_t> EncodePngToMemory(const uint8_t* bgra, uint32_t width,
+                                       uint32_t height) {
+    ComPtr<IStream> stream;
+    ThrowIfFailed(CreateStreamOnHGlobal(nullptr, TRUE, &stream),
+                  "CreateStreamOnHGlobal");
+    EncodeToStream(stream.Get(), GUID_ContainerFormatPng,
+                   GUID_WICPixelFormat32bppBGRA, width, height, width * 4,
+                   bgra, size_t(width) * height * 4, /*jxrHdr=*/false);
+
+    STATSTG stat{};
+    ThrowIfFailed(stream->Stat(&stat, STATFLAG_NONAME), "IStream::Stat");
+    const size_t size = size_t(stat.cbSize.QuadPart);
+
+    HGLOBAL hg = nullptr;
+    ThrowIfFailed(GetHGlobalFromStream(stream.Get(), &hg),
+                  "GetHGlobalFromStream");
+    std::vector<uint8_t> out(size);
+    if (size > 0) {
+        const void* src = GlobalLock(hg);
+        if (src) {
+            std::memcpy(out.data(), src, size);
+            GlobalUnlock(hg);
+        }
+    }
+    return out;
+}
 
 void SaveJxrHdr(const Frame& f, const std::wstring& path) {
     if (!f.isHdr) {

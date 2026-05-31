@@ -46,19 +46,36 @@ is standard SDR video that plays anywhere. The control bar and selection
 border use `WDA_EXCLUDEFROMCAPTURE`, so they're visible on screen but never
 appear in the recording, even when they overlap the region.
 
+### Default flow (Snipping-Tool style)
+
+By default a capture behaves like the Windows Snipping Tool: it **does not**
+open the editor. Instead it
+
+1. converts HDR→SDR using the **current** tonemap settings,
+2. saves the file(s) to `Pictures\Sundial\`,
+3. copies the **SDR** image to the clipboard, and
+4. shows a toast in the bottom-right with a preview thumbnail.
+
+**Click the toast preview to open the editor** on the just-saved file (the
+`.jxr` when one was kept, so re-toning starts from the full HDR data). Turn on
+**Edit on Capture** if you'd rather jump straight into the editor every time.
+
 ### Settings (toolbar gear menu)
 
-* **Edit on Capture** — open the editor after each capture. Off saves
-  directly using the most recent tonemap settings.
+* **Edit on Capture** — open the editor immediately on each capture instead of
+  the default toast flow. **Off by default.**
 * **Save HDR Image (JXR)** — write the original FP16 scRGB capture as a
   `.jxr` alongside the SDR `.png`, so you can re-tone later without
   recapturing.
-* **Copy to Clipboard** — copy the resulting SDR image to the clipboard
-  after each save.
+* **Auto Copy Capture** — copy the resulting **SDR** image to the clipboard
+  after each save. **On by default.** (Published as `CF_DIBV5`, `CF_DIB`, and
+  a real `PNG` blob, all with opaque alpha, so it pastes into Paint, Office,
+  browsers, and Electron chat apps alike.)
 
 ### Editor
 
-When **Edit on Capture** is on, captures open in the editor.
+The editor opens when you click a capture's toast preview, or on every capture
+when **Edit on Capture** is on.
 
 * **Curve** — tone-mapping algorithm. Default is **BT.2390 (reference)**,
   the ITU-R curve used by Windows Game Bar. **Preserve SDR**, **ACES**,
@@ -108,8 +125,9 @@ HDR capture produces two files with the same stem:
 Recordings land in the same folder as `sundial_YYYYMMDD_HHMMSS.mp4` (H.264,
 tonemapped SDR).
 
-The toast notification in the bottom-right opens the file in Explorer when
-clicked.
+The toast notification in the bottom-right shows a preview of the result.
+Clicking a **screenshot** toast opens that file in the editor; clicking a
+**recording** toast opens the `.mp4` in Explorer.
 
 ## Build and run
 
@@ -142,7 +160,8 @@ Remove-Item -Recurse -Force build
 
 | File | Responsibility |
 |---|---|
-| `main.cpp` | wWinMain, hotkey loop, single-instance, orchestrates capture → optional editor → save → toast |
+| `main.cpp` | wWinMain, hotkey loop, single-instance, orchestrates capture → save → clipboard → toast (or editor when **Edit on Capture** is on). Handles the toast's "click preview to edit" message back on the main thread |
+| `Clipboard.{h,cpp}` | Copy an SDR BGRA8 image (or a tonemapped frame) to the clipboard as `CF_DIBV5` + `CF_DIB` + a `PNG` blob, forcing opaque alpha. Shared by `main.cpp` and the editor's Copy button |
 | `HdrCapture.{h,cpp}` | DXGI Desktop Duplication, primary-monitor only. Produces `Frame` (FP16 scRGB when display is in HDR mode, BGRA8 otherwise) |
 | `Settings.{h,cpp}` | `AppSettings { editOnCapture, TonemapParams }`. INI-style load/save in `%APPDATA%\Sundial\settings.ini` |
 | `Tonemap.{h,cpp}` | CPU tonemap (`TonemapToBgra8(frame, params)`). Used on save |
@@ -150,7 +169,7 @@ Remove-Item -Recurse -Force build
 | `VideoRecorder.{h,cpp}` | Screen recording. Worker-thread DXGI duplication loop → GPU crop → `ShaderTonemap` HDR→SDR → Media Foundation `IMFSinkWriter` (H.264/MP4). Own D3D11 device, isolated from the main thread |
 | `ImageOps.{h,cpp}` | CPU crop + bilinear resize for both FP16 and BGRA8 frames |
 | `Encoder.{h,cpp}` | WIC writers — JXR (`GUID_ContainerFormatWmp` + `64bppRGBAHalf`), PNG (`32bppBGRA`) |
-| `Toast.{h,cpp}` | Bottom-right layered notification window. Click opens Explorer at the file. Runs on its own thread |
+| `Toast.{h,cpp}` | Bottom-right layered notification window with an optional preview thumbnail. Takes an `onClick` callback (screenshots open the editor, recordings open Explorer). Runs on its own thread |
 | `Toolbar.{h,cpp}` | Top-centre floating toolbar — Full Screen / Record / Edit Image / Settings (Area is drag-on-overlay). Also drives the full video flow: persistent selection with handles, control bar, countdown, recording. Settings is a `TrackPopupMenu` (no dialog) |
 | `AreaSelector.{h,cpp}` | Full-screen layered overlay; drag rectangle, ESC/right-click cancels |
 | `Editor.{h,cpp}` | "Edit on Capture" window — ImGui sidebar + D3D11 live preview. Tonemap sliders, crop, resize, Save/Cancel |

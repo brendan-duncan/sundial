@@ -2,9 +2,17 @@
 #include "HdrCapture.h"
 #include "Settings.h"
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace sundial {
+
+// Encode tightly-packed, top-down BGRA8 pixels to PNG bytes in memory. Used to
+// hand a real PNG to the clipboard (web/Electron apps read the "PNG" clipboard
+// format rather than the DIB formats). Throws on any WIC failure.
+std::vector<uint8_t> EncodePngToMemory(const uint8_t* bgra, uint32_t width,
+                                       uint32_t height);
 
 // Write FP16 scRGB pixels as a JPEG XR / HD Photo (.jxr) file. This is the
 // same format Game Bar uses for HDR screenshots and is what Windows Photos

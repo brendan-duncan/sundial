@@ -81,9 +81,13 @@ struct TonemapParams {
 };
 
 struct AppSettings {
-    bool editOnCapture = true;    // on by default - users can disable in Settings
+    // Snipping-Tool-style default: a capture saves with the current conversion
+    // settings, copies to the clipboard, and shows a toast - it does NOT open
+    // the editor. Clicking the toast preview opens the editor. Flip this on in
+    // Settings to jump straight into the editor on every capture instead.
+    bool editOnCapture = false;
     bool saveHdrJxr = true;       // write a .jxr alongside the .png when capture is HDR
-    bool autoCopyCapture = false; // copy the result to the clipboard after each capture
+    bool autoCopyCapture = true;  // copy the SDR result to the clipboard after each capture
     // Where saves go. Empty = the platform default returned by
     // DefaultOutputDir() (<user>/Pictures/Sundial). Resolve via
     // ResolveOutputDir() rather than reading this field directly.

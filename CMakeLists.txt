@@ -36,6 +36,7 @@ add_executable(sundial WIN32
   src/HdrCapture.cpp
   src/Encoder.cpp
   src/Tonemap.cpp
+  src/Clipboard.cpp
   src/Toast.cpp
   src/Settings.cpp
   src/ImageOps.cpp

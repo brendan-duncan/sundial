@@ -21,7 +21,7 @@ constexpr int kMarginPx = 20;
 struct ToastData {
     std::wstring title;
     std::wstring body;
-    std::wstring openOnClickPath;  // empty = non-clickable
+    std::function<void()> onClick;  // null = non-clickable
     std::vector<uint8_t> previewBgra;
     uint32_t previewW = 0;
     uint32_t previewH = 0;
@@ -84,19 +84,14 @@ LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONUP: {
             auto* d = reinterpret_cast<ToastData*>(
                 GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-            if (d && !d->openOnClickPath.empty()) {
-                const std::wstring args =
-                    L"/select,\"" + d->openOnClickPath + L"\"";
-                ShellExecuteW(nullptr, L"open", L"explorer.exe",
-                              args.c_str(), nullptr, SW_SHOWNORMAL);
-            }
+            if (d && d->onClick) d->onClick();
             DestroyWindow(hwnd);
             return 0;
         }
         case WM_SETCURSOR: {
             auto* d = reinterpret_cast<ToastData*>(
                 GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-            if (d && !d->openOnClickPath.empty()) {
+            if (d && d->onClick) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -196,7 +191,7 @@ DWORD WINAPI ToastThread(LPVOID param) {
     // foreground window doesn't lose focus when the toast appears.
     DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
                     WS_EX_NOACTIVATE;
-    if (data->openOnClickPath.empty()) {
+    if (!data->onClick) {
         exStyle |= WS_EX_TRANSPARENT;
     }
 
@@ -223,14 +218,14 @@ DWORD WINAPI ToastThread(LPVOID param) {
 
 void ShowToast(const std::wstring& title,
                const std::wstring& body,
-               const std::wstring& openOnClickPath,
+               std::function<void()> onClick,
                std::vector<uint8_t> previewBgra,
                uint32_t previewWidth,
                uint32_t previewHeight,
                int durationMs) {
     auto* data = new ToastData{title,
                                body,
-                               openOnClickPath,
+                               std::move(onClick),
                                std::move(previewBgra),
                                previewWidth,
                                previewHeight,

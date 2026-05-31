@@ -1,5 +1,6 @@
 #include "Editor.h"
 
+#include "Clipboard.h"
 #include "ImageOps.h"
 #include "Resource.h"
 #include "ShaderTonemap.h"
@@ -384,55 +385,9 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
     return std::wstring{};
 }
 
-bool CopyBgra8ToClipboard(HWND owner, const std::vector<uint8_t>& bgra,
-                          uint32_t width, uint32_t height) {
-    if (!OpenClipboard(owner)) return false;
-    EmptyClipboard();
-
-    const size_t imgSize = bgra.size();
-    HGLOBAL hMem =
-        GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPV5HEADER) + imgSize);
-    if (!hMem) {
-        CloseClipboard();
-        return false;
-    }
-    auto* hdr = static_cast<BITMAPV5HEADER*>(GlobalLock(hMem));
-    ZeroMemory(hdr, sizeof(BITMAPV5HEADER));
-    hdr->bV5Size = sizeof(BITMAPV5HEADER);
-    hdr->bV5Width = int(width);
-    hdr->bV5Height = -int(height);   // negative => top-down rows
-    hdr->bV5Planes = 1;
-    hdr->bV5BitCount = 32;
-    hdr->bV5Compression = BI_BITFIELDS;
-    hdr->bV5SizeImage = uint32_t(imgSize);
-    hdr->bV5RedMask   = 0x00FF0000;
-    hdr->bV5GreenMask = 0x0000FF00;
-    hdr->bV5BlueMask  = 0x000000FF;
-    hdr->bV5AlphaMask = 0xFF000000;
-    hdr->bV5CSType = LCS_sRGB;
-    hdr->bV5Intent = LCS_GM_GRAPHICS;
-    std::memcpy(reinterpret_cast<uint8_t*>(hdr) + sizeof(BITMAPV5HEADER),
-                bgra.data(), imgSize);
-    GlobalUnlock(hMem);
-
-    if (!SetClipboardData(CF_DIBV5, hMem)) {
-        GlobalFree(hMem);
-        CloseClipboard();
-        return false;
-    }
-    CloseClipboard();
-    return true;
-}
-
 void DoCopy(EditorContext& ctx) {
     Frame edited = ProduceEditedFrame(ctx);
-    std::vector<uint8_t> bgra;
-    if (edited.isHdr) {
-        bgra = TonemapToBgra8(edited, ctx.params);
-    } else {
-        bgra = edited.pixels;
-    }
-    if (CopyBgra8ToClipboard(ctx.hwnd, bgra, edited.width, edited.height)) {
+    if (CopyFrameToClipboard(edited, ctx.params, ctx.hwnd)) {
         ctx.copyFeedbackUntil =
             std::chrono::steady_clock::now() + std::chrono::seconds(2);
     }
