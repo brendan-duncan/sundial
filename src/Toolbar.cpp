@@ -1,6 +1,7 @@
 #include "Toolbar.h"
 
 #include <Windows.h>
+#include <commctrl.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 
@@ -21,8 +22,9 @@ constexpr int kBtnW = 110;
 constexpr int kBtnH = 64;
 constexpr int kPadding = 6;
 constexpr int kButtonCount = 4;
+constexpr int kNoteH = 24;  // hint strip drawn below the button row
 constexpr int kToolbarW = kBtnW * kButtonCount + kPadding * (kButtonCount + 1);
-constexpr int kToolbarH = kBtnH + kPadding * 2;
+constexpr int kToolbarH = kBtnH + kNoteH + kPadding * 3;
 constexpr int kIconSize = 22;
 
 // Mode-select toolbar buttons. Area capture is still triggered by dragging on
@@ -87,6 +89,7 @@ struct ToolbarState {
     ToolbarResult::Kind kind = ToolbarResult::Kind::None;
     RECT area{};
     int hoveredId = 0;
+    HWND tipHwnd = nullptr;  // button tooltips (mode-select phase only)
 
     // Video mode.
     HWND dimHwnd = nullptr;
@@ -269,6 +272,66 @@ int HitTest(int x, int y) {
         if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return id;
     }
     return 0;
+}
+
+// Hover tooltip per button. The toolbar is custom-painted (no real child
+// controls), so we register each button's rect with a standard tooltip
+// control. TTF_SUBCLASS lets it relay hover messages without us forwarding
+// them. Torn down when we leave the mode-select phase (EnterVideoMode).
+void CreateButtonTooltips(HWND owner, ToolbarState* s) {
+    HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                               WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                               CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                               CW_USEDEFAULT, owner, nullptr,
+                               GetModuleHandleW(nullptr), nullptr);
+    if (!tip) return;
+
+    struct Tip { int id; const wchar_t* text; };
+    const Tip tips[] = {
+        {kIdFullScreen, L"Capture the entire screen"},
+        {kIdRecord, L"Record a video of a screen region"},
+        {kIdEditImage, L"Open an image file in the editor"},
+        {kIdSettings, L"Capture and output options"},
+    };
+    for (const Tip& t : tips) {
+        TOOLINFOW ti{};
+        ti.cbSize = TTTOOLINFOW_V1_SIZE;  // works on comctl32 v5 and v6
+        ti.uFlags = TTF_SUBCLASS;
+        ti.hwnd = owner;
+        ti.uId = static_cast<UINT_PTR>(t.id);
+        ti.rect = GetButtonRect(t.id);
+        ti.hinst = GetModuleHandleW(nullptr);
+        ti.lpszText = const_cast<wchar_t*>(t.text);
+        SendMessageW(tip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+    }
+    SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, 320);
+    s->tipHwnd = tip;
+}
+
+void DestroyButtonTooltips(ToolbarState* s) {
+    if (s->tipHwnd) {
+        DestroyWindow(s->tipHwnd);
+        s->tipHwnd = nullptr;
+    }
+}
+
+// Hint line below the buttons telling the user about drag-to-select area
+// capture, which has no dedicated button.
+void DrawToolbarNote(HDC hdc, const RECT& client) {
+    HFONT font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(hdc, font);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(170, 170, 170));
+    RECT noteRc = client;
+    noteRc.top = client.bottom - kNoteH - kPadding;
+    noteRc.bottom = client.bottom - kPadding;
+    DrawTextW(hdc, L"Or drag anywhere on the screen to capture a custom area",
+              -1, &noteRc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, oldFont);
+    DeleteObject(font);
 }
 
 // ---- selection handles ---------------------------------------------------
@@ -530,6 +593,9 @@ void OnControlButton(HWND bar, ToolbarState* s) {
 
 // Switch the mode-select toolbar window into video mode (hint bar at top).
 void EnterVideoMode(HWND hwnd, ToolbarState* s) {
+    // The button rects no longer apply once the window becomes the hint /
+    // control bar, so drop the per-button tooltips.
+    DestroyButtonTooltips(s);
     s->phase = VPhase::PickRegion;
     s->hasRect = false;
     const int x = s->originX + (s->monW - kHintW) / 2;
@@ -657,6 +723,8 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* cs = reinterpret_cast<CREATESTRUCT*>(lp);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA,
                               reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+            CreateButtonTooltips(
+                hwnd, reinterpret_cast<ToolbarState*>(cs->lpCreateParams));
             return 0;
         }
         case WM_PAINT: {
@@ -683,6 +751,7 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                        L"Edit Image...", s && s->hoveredId == kIdEditImage);
             DrawButton(hdc, GetButtonRect(kIdSettings), kIdSettings,
                        L"Settings", s && s->hoveredId == kIdSettings);
+            DrawToolbarNote(hdc, client);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -779,6 +848,7 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
+            if (s) DestroyButtonTooltips(s);
             PostQuitMessage(0);
             return 0;
     }
@@ -1124,6 +1194,8 @@ HWND CreateDimOverlay(DimState* state) {
 void EnsureClassRegistered() {
     static bool registered = false;
     if (registered) return;
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_BAR_CLASSES};
+    InitCommonControlsEx(&icc);  // registers the tooltip window class
     HICON appIcon = LoadIconW(GetModuleHandleW(nullptr),
                               MAKEINTRESOURCEW(IDI_APP_ICON));
     WNDCLASSEXW wc{};

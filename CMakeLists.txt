@@ -63,6 +63,7 @@ target_link_libraries(sundial PRIVATE
   mfuuid.lib
   user32.lib
   gdi32.lib
+  comctl32.lib
   shell32.lib
   shcore.lib
   ole32.lib

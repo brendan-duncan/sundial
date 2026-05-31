@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -60,6 +61,15 @@ std::string WideToUtf8(const std::wstring& w) {
 // we decode on the way out. The uTexIsLinear flag lets the editor mark the
 // HDR-passthrough preview texture (which is already FP16 linear) so we skip
 // the texture decode for that one draw.
+//
+// uSdrWhiteScale lifts the sRGB-decoded draws (the UI chrome and the
+// SDR-tonemapped preview) up to the display's SDR reference white. scRGB 1.0
+// is a fixed 80 nits on Windows - DWM does NOT apply the user's "SDR content
+// brightness" level to an scRGB swap chain - so without this the SDR preview
+// and UI sit at 80 nits while the surrounding desktop is at 200+ nits. The
+// dim white plus the raised HDR black floor collapses contrast and reads as
+// "washed out". The HDR-passthrough texture already carries absolute scRGB
+// values, so it is left at scale 1.0.
 constexpr char kHdrImguiPsSrc[] = R"HLSL(
 struct PSIn {
     float4 pos : SV_POSITION;
@@ -69,8 +79,9 @@ struct PSIn {
 Texture2D     gTex  : register(t0);
 SamplerState  gSamp : register(s0);
 cbuffer Cfg : register(b0) {
-    uint uTexIsLinear;
-    uint _pad[3];
+    uint  uTexIsLinear;
+    float uSdrWhiteScale;
+    uint  _pad[2];
 };
 float3 SrgbToLinear(float3 c) {
     return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
@@ -79,7 +90,9 @@ float4 main(PSIn i) : SV_Target {
     float4 t = gTex.Sample(gSamp, i.uv);
     float3 vc = SrgbToLinear(i.col.rgb);
     float3 tc = (uTexIsLinear != 0u) ? t.rgb : SrgbToLinear(t.rgb);
-    return float4(vc * tc, i.col.a * t.a);
+    float3 outc = vc * tc;
+    if (uTexIsLinear == 0u) outc *= uSdrWhiteScale;
+    return float4(outc, i.col.a * t.a);
 }
 )HLSL";
 
@@ -87,6 +100,9 @@ struct HdrImguiPipeline {
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3D11Buffer> cb;
     UINT lastTexIsLinear = 0xFFFFFFFFu;
+    // Lift for sRGB-decoded draws = displaySdrWhiteNits / 80. Set once after
+    // Init; constant for the editor's lifetime.
+    float sdrWhiteScale = 1.0f;
 
     bool Init(ID3D11Device* dev) {
         ComPtr<ID3DBlob> blob, err;
@@ -114,9 +130,15 @@ struct HdrImguiPipeline {
             D3D11_MAPPED_SUBRESOURCE m{};
             if (SUCCEEDED(dc->Map(cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
                                   &m))) {
-                auto* p = static_cast<UINT*>(m.pData);
-                p[0] = texIsLinear;
-                p[1] = p[2] = p[3] = 0;
+                struct CbData {
+                    UINT  texIsLinear;
+                    float sdrWhiteScale;
+                    UINT  pad[2];
+                };
+                auto* p = static_cast<CbData*>(m.pData);
+                p->texIsLinear = texIsLinear;
+                p->sdrWhiteScale = sdrWhiteScale;
+                p->pad[0] = p->pad[1] = 0;
                 dc->Unmap(cb.Get(), 0);
             }
             lastTexIsLinear = texIsLinear;
@@ -148,6 +170,13 @@ struct EditorContext {
 
     // Editor UI state
     TonemapParams params{};
+    // Snapshot of the tonemap params as the editor opened; used (together with
+    // the initial full-frame crop/resize) to tell whether the user made any
+    // edits when they press Esc.
+    TonemapParams initialParams{};
+    // Set when Esc is pressed with unsaved edits; opens the save/close popup on
+    // the next frame.
+    bool closeConfirmPending = false;
     int cropX = 0, cropY = 0, cropW = 0, cropH = 0;
     int resizeW = 0, resizeH = 0;
     bool resizeLockAspect = true;
@@ -608,23 +637,50 @@ void DrawPresetSection(EditorContext& ctx) {
     }
 }
 
+// Commit a plain Save: write to the default (or overwrite) path and exit.
+void DoSave(EditorContext& ctx) {
+    ctx.result.outputPath =
+        DefaultSavePath(ctx.defaultSavePath, ctx.outputFolder);
+    ctx.result.saved = true;
+    ctx.exitRequested = true;
+}
+
+// Open the Save As dialog. Returns true if the user picked a path (we're now
+// committed to saving + exiting); false if they cancelled the dialog.
+bool DoSaveAs(EditorContext& ctx) {
+    std::wstring path =
+        PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder);
+    if (path.empty()) return false;
+    ctx.result.outputPath = path;
+    ctx.result.saved = true;
+    ctx.exitRequested = true;
+    return true;
+}
+
+// True if the user changed anything from the state the editor opened with:
+// any tonemap param, the crop rect, or the output size.
+bool EditsMade(const EditorContext& ctx) {
+    if (std::memcmp(&ctx.params, &ctx.initialParams,
+                    sizeof(TonemapParams)) != 0) {
+        return true;
+    }
+    if (ctx.cropX != 0 || ctx.cropY != 0 ||
+        ctx.cropW != int(ctx.source->width) ||
+        ctx.cropH != int(ctx.source->height)) {
+        return true;
+    }
+    return ctx.resizeW != int(ctx.source->width) ||
+           ctx.resizeH != int(ctx.source->height);
+}
+
 void DrawOutputSection(EditorContext& ctx) {
     const ImVec2 kBtn(142, 30);
     if (IconButton("save", "Save", IconKind::Save, kBtn)) {
-        ctx.result.outputPath =
-            DefaultSavePath(ctx.defaultSavePath, ctx.outputFolder);
-        ctx.result.saved = true;
-        ctx.exitRequested = true;
+        DoSave(ctx);
     }
     ImGui::SameLine();
     if (IconButton("saveas", "Save As...", IconKind::SaveAs, kBtn)) {
-        std::wstring path =
-            PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder);
-        if (!path.empty()) {
-            ctx.result.outputPath = path;
-            ctx.result.saved = true;
-            ctx.exitRequested = true;
-        }
+        DoSaveAs(ctx);
     }
     if (IconButton("copy", "Copy", IconKind::Copy, kBtn)) {
         DoCopy(ctx);
@@ -1081,6 +1137,39 @@ void DrawPreview(EditorContext& ctx) {
     ImGui::EndChild();
 }
 
+// Modal shown when Esc is pressed with unsaved edits: Save / Save As / close
+// without saving. Dismissing it (Esc / clicking away) cancels the close.
+void DrawCloseConfirmPopup(EditorContext& ctx) {
+    if (ctx.closeConfirmPending) {
+        ImGui::OpenPopup("Unsaved edits");
+        ctx.closeConfirmPending = false;
+    }
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Unsaved edits", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize |
+                                   ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextUnformatted("You have unsaved edits. Save before closing?");
+        ImGui::Dummy(ImVec2(0, 6));
+        if (ImGui::Button("Save", ImVec2(120, 0))) {
+            DoSave(ctx);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save As...", ImVec2(120, 0))) {
+            // Leave the popup open if the user cancels the Save As dialog.
+            if (DoSaveAs(ctx)) ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close without saving", ImVec2(180, 0))) {
+            ctx.result.saved = false;
+            ctx.exitRequested = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 }  // namespace
 
 EditorResult RunEditor(const Frame& source, const AppSettings& settings,
@@ -1091,6 +1180,7 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     ctx.outputFolder = settings.outputFolder;
     ctx.result.updatedSettings = settings;
     ctx.params = settings.tonemap;
+    ctx.initialParams = ctx.params;  // baseline for the Esc unsaved-edits check
     ctx.cropX = 0;
     ctx.cropY = 0;
     ctx.cropW = int(source.width);
@@ -1131,6 +1221,17 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     if (ctx.hdrMode && !ctx.hdrPipeline.Init(ctx.device.Get())) {
         // Fall back to SDR rendering if we can't build the custom shader.
         ctx.hdrMode = false;
+    }
+
+    if (ctx.hdrMode) {
+        // Lift the UI + SDR preview from scRGB's fixed 80-nit white up to the
+        // display's SDR reference white so the SDR preview matches its
+        // non-HDR appearance. Clamp to [1, 6.25] (80..500 nits) against a
+        // missing/garbage OS value.
+        const float nits =
+            source.sdrWhiteLevelNits > 0.0f ? source.sdrWhiteLevelNits : 80.0f;
+        ctx.hdrPipeline.sdrWhiteScale =
+            std::clamp(nits / 80.0f, 1.0f, 6.25f);
     }
 
     IMGUI_CHECKVERSION();
@@ -1212,14 +1313,33 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
 
         DrawSidebar(ctx);
         DrawPreview(ctx);
+
+        // Esc closes the editor. With unsaved edits, ask save/save-as/close
+        // first. While any popup is open (this one or the preset dialogs) let
+        // Esc dismiss that popup instead; while a text field is focused let it
+        // cancel that edit instead.
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) &&
+            !ImGui::GetIO().WantTextInput &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
+            if (EditsMade(ctx)) {
+                ctx.closeConfirmPending = true;
+            } else {
+                ctx.result.saved = false;
+                ctx.exitRequested = true;
+            }
+        }
+        DrawCloseConfirmPopup(ctx);
+
         ImGui::End();
 
         ImGui::Render();
         // Background gray. In HDR mode the backbuffer is linear scRGB, so
-        // feed the linearised value (sRGB 0.12 -> linear ~0.0127); otherwise
+        // feed the linearised value (sRGB 0.12 -> linear ~0.0127) lifted to
+        // the same SDR reference white as the UI/preview draws; otherwise
         // it's already in the sRGB-encoded space the SDR backbuffer expects.
         const float bgSrgb[4]   = {0.12f,   0.12f,   0.12f,   1.0f};
-        const float bgLinear[4] = {0.0127f, 0.0127f, 0.0127f, 1.0f};
+        const float bgS = 0.0127f * ctx.hdrPipeline.sdrWhiteScale;
+        const float bgLinear[4] = {bgS, bgS, bgS, 1.0f};
         const float* bg = ctx.hdrMode ? bgLinear : bgSrgb;
         ID3D11RenderTargetView* rtv = ctx.backbufferRtv.Get();
         ctx.context->OMSetRenderTargets(1, &rtv, nullptr);
