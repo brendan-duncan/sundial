@@ -2,7 +2,10 @@
 
 #include <shellapi.h>
 
+#include <string>
+
 #include "Resource.h"
+#include "Version.h"
 
 namespace sundial {
 namespace {
@@ -104,6 +107,10 @@ void TrayIcon::ShowContextMenu() {
     GetCursorPos(&pt);
 
     HMENU menu = CreatePopupMenu();
+    // Disabled header showing the running version.
+    const std::wstring versionItem = L"Sundial v" + AppVersionW();
+    AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, versionItem.c_str());
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kIdCapture, L"Capture\tWin+Shift+X");
     AppendMenuW(menu, MF_STRING, kIdEditImage, L"Edit Image...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);

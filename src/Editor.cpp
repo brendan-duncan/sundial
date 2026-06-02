@@ -6,6 +6,7 @@
 #include "ShaderTonemap.h"
 #include "ShellIntegration.h"
 #include "Tonemap.h"
+#include "Version.h"
 
 #include <Windows.h>
 #include <commdlg.h>
@@ -1350,13 +1351,14 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     // Put the file being edited in the title bar. defaultSavePath is the file
     // the editor opened / Save writes to; a fresh capture has none yet, so it
     // keeps the generic title until saved.
+    const std::wstring titlePrefix = L"Sundial v" + AppVersionW();
     std::wstring editorTitle;
     if (tonemapOnly) {
-        editorTitle = L"Sundial - Recording HDR to SDR Look";
+        editorTitle = titlePrefix + L" - Recording HDR to SDR Look";
     } else if (!defaultSavePath.empty()) {
-        editorTitle = L"Sundial - " + defaultSavePath;
+        editorTitle = titlePrefix + L" - " + defaultSavePath;
     } else {
-        editorTitle = L"Sundial - HDR to SDR Editor";
+        editorTitle = titlePrefix + L" - HDR to SDR Editor";
     }
 
     ctx.hwnd = CreateWindowExW(

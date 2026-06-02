@@ -8,6 +8,7 @@
 #include <cctype>
 #include <chrono>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 #include <thread>
@@ -17,12 +18,21 @@
 namespace sundial {
 namespace {
 
-// Where releases are published. Velopack reads the release feed and packages
-// from this base URL. GitHub's "releases/latest/download" path always points
-// at the newest release's assets, which is exactly what the updater needs.
-//
-constexpr char kUpdateUrl[] =
-    "https://github.com/brendan-duncan/sundial/releases/latest/download";
+// The GitHub repository releases are published to. We use Velopack's GithubSource
+// (which queries the GitHub releases API) rather than a plain
+// "releases/latest/download" URL: that static path makes Velopack treat the
+// location as a simple file feed and fetch "<url>/releases.<channel>.json",
+// which GitHub serves a 404 for - surfacing to the user as the misleading
+// "couldn't reach the update server". GithubSource resolves the latest release
+// and its assets through the API, matching how `vpk upload github` publishes.
+constexpr char kRepoUrl[] = "https://github.com/brendan-duncan/sundial";
+
+// An update source backed by the GitHub releases API. Constructing it does no
+// network I/O on its own; the feed is only fetched when the owning manager is
+// asked to check for updates.
+std::unique_ptr<Velopack::GithubSource> MakeSource() {
+    return std::make_unique<Velopack::GithubSource>(kRepoUrl);
+}
 
 // Transient connectivity failures (Velopack surfaces these as messages like
 // "Network(Http(StatusCode(404)))", connection/DNS/TLS/timeout errors) deserve
@@ -46,7 +56,7 @@ bool IsTransientNetworkError(const std::exception& e) {
 
 void DoCheck(bool silent, unsigned long mainThreadId) {
     try {
-        Velopack::UpdateManager manager(kUpdateUrl);
+        Velopack::UpdateManager manager(MakeSource());
 
         // The check + download can hit a transient network blip (including the
         // publish-race 404 above), so make one quiet retry before bothering the

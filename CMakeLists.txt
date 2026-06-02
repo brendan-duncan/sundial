@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sundial VERSION 1.1.0 LANGUAGES CXX)
+project(sundial VERSION 1.1.1 LANGUAGES CXX)
 
 # App version shown in the About box. Defaults to the project() version; CI and
 # tools/release.ps1 override it with the release tag (-DSUNDIAL_VERSION=x.y.z).
@@ -89,6 +89,7 @@ add_executable(sundial WIN32
   src/ShellIntegration.cpp
   src/Updater.cpp
   src/About.cpp
+  src/Version.cpp
   src/sundial.rc
 )
 

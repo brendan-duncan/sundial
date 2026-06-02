@@ -16,6 +16,7 @@
 #include "Resource.h"
 #include "ShellIntegration.h"
 #include "Updater.h"
+#include "Version.h"
 #include "VideoRecorder.h"
 
 namespace sundial {
@@ -347,6 +348,27 @@ void DrawToolbarNote(HDC hdc, const RECT& client) {
     DrawTextW(hdc, L"Or drag anywhere on the screen to capture a custom area",
               -1, &noteRc,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, oldFont);
+    DeleteObject(font);
+}
+
+// Small, dim version label in the bottom-right corner of the mode-select
+// toolbar. The hint line above is centred and stops well short of the edges,
+// so a right-aligned badge here doesn't collide with it.
+void DrawVersionBadge(HDC hdc, const RECT& client) {
+    HFONT font = CreateFontW(-11, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(hdc, font);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(120, 120, 120));
+    const std::wstring label = L"v" + AppVersionW();
+    RECT verRc = client;
+    verRc.top = client.bottom - kNoteH - kPadding;
+    verRc.bottom = client.bottom - kPadding;
+    verRc.right = client.right - kPadding;
+    DrawTextW(hdc, label.c_str(), -1, &verRc,
+              DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, oldFont);
     DeleteObject(font);
 }
@@ -875,6 +897,7 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DrawButton(hdc, GetButtonRect(kIdSettings), kIdSettings,
                        L"Settings", s && s->hoveredId == kIdSettings);
             DrawToolbarNote(hdc, client);
+            DrawVersionBadge(hdc, client);
             EndPaint(hwnd, &ps);
             return 0;
         }

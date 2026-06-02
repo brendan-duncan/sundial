@@ -58,10 +58,15 @@ $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 # The first configure on a clean tree fetches libultrahdr; its libjpeg-turbo
 # dependency isn't detected until the source tree has settled, so the very first
 # configure can fail. A second pass (sources now present) succeeds - retry once.
-cmake -S $root -B $cmakeDir -DSUNDIAL_VERSION=$Version
+# Quote the whole -D token: Windows PowerShell mangles a bare
+# -DSUNDIAL_VERSION=$Version (it drops the dotted parts and doesn't even expand
+# $Version inside the bareword), which is what baked a literal "$Version" into
+# the About box. Quoting forces normal string interpolation and passes the
+# token to cmake intact.
+cmake -S $root -B $cmakeDir "-DSUNDIAL_VERSION=$Version"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "First configure failed (libultrahdr dependency bootstrap); retrying once ..."
-    cmake -S $root -B $cmakeDir -DSUNDIAL_VERSION=$Version
+    cmake -S $root -B $cmakeDir "-DSUNDIAL_VERSION=$Version"
 }
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)." }
 cmake --build $cmakeDir --config Release
