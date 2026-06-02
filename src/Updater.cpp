@@ -4,7 +4,11 @@
 
 #include <Windows.h>
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <exception>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -20,20 +24,54 @@ namespace {
 constexpr char kUpdateUrl[] =
     "https://github.com/brendan-duncan/sundial/releases/latest/download";
 
+// Transient connectivity failures (Velopack surfaces these as messages like
+// "Network(Http(StatusCode(404)))", connection/DNS/TLS/timeout errors) deserve
+// a calm "try again later" rather than the raw, alarming error string. The 404
+// case is real and common: GitHub briefly serves a release before all of its
+// assets finish uploading, so a check that races a publish hits it.
+bool IsTransientNetworkError(const std::exception& e) {
+    std::string msg = e.what();
+    std::transform(msg.begin(), msg.end(), msg.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    for (const char* needle : {"network", "http", "statuscode", "timeout",
+                               "timed out", "connect", "dns", "tls", "ssl",
+                               "socket"}) {
+        if (msg.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void DoCheck(bool silent, unsigned long mainThreadId) {
     try {
         Velopack::UpdateManager manager(kUpdateUrl);
 
-        auto updInfo = manager.CheckForUpdates();
-        if (!updInfo.has_value()) {
-            if (!silent) {
-                MessageBoxW(nullptr, L"Sundial is up to date.", L"Sundial",
-                            MB_ICONINFORMATION);
+        // The check + download can hit a transient network blip (including the
+        // publish-race 404 above), so make one quiet retry before bothering the
+        // user. CheckForUpdates() returns nullopt only when already up to date.
+        std::optional<Velopack::UpdateInfo> updInfo;
+        for (int attempt = 0;; ++attempt) {
+            try {
+                updInfo = manager.CheckForUpdates();
+                if (!updInfo.has_value()) {
+                    if (!silent) {
+                        MessageBoxW(nullptr, L"Sundial is up to date.",
+                                    L"Sundial", MB_ICONINFORMATION);
+                    }
+                    return;
+                }
+                manager.DownloadUpdates(updInfo.value());
+                break;  // check + download both succeeded
+            } catch (const std::exception& e) {
+                if (attempt == 0 && IsTransientNetworkError(e)) {
+                    std::this_thread::sleep_for(std::chrono::seconds(3));
+                    continue;
+                }
+                throw;  // not transient, or the retry also failed
             }
-            return;
         }
-
-        manager.DownloadUpdates(updInfo.value());
 
         const wchar_t* msg =
             L"A new version of Sundial is available and has been downloaded.\n"
@@ -56,8 +94,15 @@ void DoCheck(bool silent, unsigned long mainThreadId) {
         }
     } catch (const std::exception& e) {
         if (!silent) {
-            MessageBoxA(nullptr, e.what(), "Sundial update failed",
-                        MB_ICONWARNING);
+            if (IsTransientNetworkError(e)) {
+                MessageBoxW(nullptr,
+                            L"Couldn't reach the update server.\n"
+                            L"Please check your connection and try again later.",
+                            L"Sundial", MB_ICONINFORMATION);
+            } else {
+                MessageBoxA(nullptr, e.what(), "Sundial update failed",
+                            MB_ICONWARNING);
+            }
         }
     } catch (...) {
         if (!silent) {
