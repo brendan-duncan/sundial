@@ -373,7 +373,8 @@ Frame ProduceEditedFrame(const EditorContext& ctx) {
 }
 
 std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
-                            const std::wstring& outputFolderOverride) {
+                            const std::wstring& outputFolderOverride,
+                            bool allowUltraHdr) {
     std::filesystem::path defaultDir;
     std::wstring stem;
     if (!defaultPath.empty()) {
@@ -404,7 +405,12 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"PNG image (*.png)\0*.png\0\0";
+    // Filter index 2 (when present) is Ultra HDR JPEG - an SDR JPEG with an
+    // embedded gain map, only meaningful for HDR sources.
+    ofn.lpstrFilter =
+        allowUltraHdr
+            ? L"PNG image (*.png)\0*.png\0Ultra HDR JPEG (*.jpg)\0*.jpg\0\0"
+            : L"PNG image (*.png)\0*.png\0\0";
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrDefExt = L"png";
@@ -412,10 +418,20 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
     ofn.lpstrTitle = L"Save As";
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
-    if (GetSaveFileNameW(&ofn)) {
-        return std::wstring(fileName);
+    if (!GetSaveFileNameW(&ofn)) {
+        return std::wstring{};
     }
-    return std::wstring{};
+    // Force the extension to match the chosen filter so it doesn't get an
+    // inconsistent default (e.g. picking Ultra HDR but typing a bare name).
+    std::filesystem::path chosen = fileName;
+    if (allowUltraHdr && ofn.nFilterIndex == 2) {
+        std::wstring ext = chosen.extension().wstring();
+        if (_wcsicmp(ext.c_str(), L".jpg") != 0 &&
+            _wcsicmp(ext.c_str(), L".jpeg") != 0) {
+            chosen.replace_extension(L".jpg");
+        }
+    }
+    return chosen.wstring();
 }
 
 void DoCopy(EditorContext& ctx) {
@@ -653,7 +669,8 @@ void DoSave(EditorContext& ctx) {
 // committed to saving + exiting); false if they cancelled the dialog.
 bool DoSaveAs(EditorContext& ctx) {
     std::wstring path =
-        PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder);
+        PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder,
+                       ctx.source && ctx.source->isHdr);
     if (path.empty()) return false;
     ctx.result.outputPath = path;
     ctx.result.saved = true;
@@ -1226,10 +1243,21 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     ctx.clientW = initW;
     ctx.clientH = initH;
 
+    // Put the file being edited in the title bar. defaultSavePath is the file
+    // the editor opened / Save writes to; a fresh capture has none yet, so it
+    // keeps the generic title until saved.
+    std::wstring editorTitle;
+    if (tonemapOnly) {
+        editorTitle = L"Sundial - Recording HDR to SDR Look";
+    } else if (!defaultSavePath.empty()) {
+        editorTitle = L"Sundial - " + defaultSavePath;
+    } else {
+        editorTitle = L"Sundial - HDR to SDR Editor";
+    }
+
     ctx.hwnd = CreateWindowExW(
         0, kClassName,
-        tonemapOnly ? L"Sundial - Recording HDR to SDR Look"
-                    : L"Sundial - HDR to SDR Editor",
+        editorTitle.c_str(),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, initW, initH,
         nullptr, nullptr, GetModuleHandleW(nullptr), &ctx);
@@ -1331,7 +1359,9 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
             } else if (ctrl && shift && x && !ctx.tonemapOnly) {
                 std::wstring path = PickSaveAsPath(ctx.hwnd,
                                                    ctx.defaultSavePath,
-                                                   ctx.outputFolder);
+                                                   ctx.outputFolder,
+                                                   ctx.source &&
+                                                       ctx.source->isHdr);
                 if (!path.empty()) {
                     ctx.result.outputPath = path;
                     ctx.result.saved = true;

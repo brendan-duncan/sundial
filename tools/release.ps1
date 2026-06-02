@@ -51,7 +51,18 @@ if (-not (Get-Command vpk -ErrorAction SilentlyContinue)) {
 # Build with the release version baked in, so the About box matches the package.
 $cmakeDir = Join-Path $root "build"
 Write-Host "Configuring + building $Version ..."
+# libultrahdr (Ultra HDR export) vendors libjpeg-turbo 3.0.1, whose
+# cmake_minimum_required predates the floor enforced by CMake 4.x. Let that
+# nested ExternalProject configure accept the older minimum.
+$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+# The first configure on a clean tree fetches libultrahdr; its libjpeg-turbo
+# dependency isn't detected until the source tree has settled, so the very first
+# configure can fail. A second pass (sources now present) succeeds - retry once.
 cmake -S $root -B $cmakeDir -DSUNDIAL_VERSION=$Version
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "First configure failed (libultrahdr dependency bootstrap); retrying once ..."
+    cmake -S $root -B $cmakeDir -DSUNDIAL_VERSION=$Version
+}
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)." }
 cmake --build $cmakeDir --config Release
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)." }
@@ -62,12 +73,18 @@ if (-not (Test-Path $exe)) {
 }
 
 Write-Host "Packing Sundial $Version from $BuildDir ..."
+# --shortcuts adds a run-on-startup shortcut (Startup folder) alongside the
+# Start menu entry, so Sundial launches at login. vpk can't pass arguments to
+# the shortcuts it creates, so the Startup one is argless; Sundial rewrites it
+# on launch to add --startup (EnsureStartupShortcutArgs) so login launches stay
+# in the tray instead of popping the toolbar.
 vpk pack `
     --packId Sundial `
     --packTitle "Sundial" `
     --packVersion $Version `
     --packDir $BuildDir `
     --mainExe sundial.exe `
+    --shortcuts StartMenuRoot,Startup `
     --outputDir $releaseDir
 if ($LASTEXITCODE -ne 0) { throw "vpk pack failed ($LASTEXITCODE)." }
 

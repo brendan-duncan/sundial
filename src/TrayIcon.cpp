@@ -43,7 +43,27 @@ LRESULT CALLBACK TrayIcon::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp,
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+UINT TrayShowToolbarMessage() {
+    // RegisterWindowMessage hands back the same value for a given string in
+    // every process, so the second instance and the resident one agree on it
+    // without sharing a header-level constant.
+    static const UINT msg = RegisterWindowMessageW(L"SundialShowToolbar.v1");
+    return msg;
+}
+
+HWND FindRunningTrayWindow() {
+    // The tray window is message-only (HWND_MESSAGE parent), so it must be
+    // searched for under HWND_MESSAGE rather than the desktop.
+    return FindWindowExW(HWND_MESSAGE, nullptr, kClassName, nullptr);
+}
+
 LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == TrayShowToolbarMessage()) {
+        // A second launch asked us to bring up the toolbar - same as a
+        // left-click on the tray icon.
+        if (primary_) primary_();
+        return 0;
+    }
     if (msg == kTrayMessage) {
         switch (LOWORD(lp)) {
             case WM_LBUTTONUP:

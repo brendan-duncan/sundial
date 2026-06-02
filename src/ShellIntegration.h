@@ -9,4 +9,12 @@ namespace sundial {
 // Windows 11 shows third-party verbs under "Show more options".
 void RegisterJxrAssociation(const std::wstring& exePath);
 
+// Velopack creates the run-on-startup shortcut with no arguments (vpk can't
+// attach per-shortcut args), so a login launch would look identical to a
+// manual one and pop the toolbar. This rewrites that shortcut - if present in
+// the user's Startup folder - to pass --startup, which keeps Sundial in the
+// tray at login. Idempotent (only writes when the flag is missing) and a no-op
+// when no startup shortcut exists. Call on a normal resident launch.
+void EnsureStartupShortcutArgs();
+
 }  // namespace sundial

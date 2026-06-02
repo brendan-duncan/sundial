@@ -99,9 +99,21 @@ void SaveAndNotify(const sundial::Frame& frame,
     const std::wstring stem = png.stem().wstring();
     const std::wstring dir = png.parent_path().wstring();
 
+    // Save As can target Ultra HDR (.jpg): a single SDR JPEG with an embedded
+    // gain map. Only meaningful for HDR sources, so a .jpg from an SDR frame
+    // still falls through to the plain PNG path below.
+    const std::wstring ext = png.extension().wstring();
+    const bool wantUltraHdr =
+        frame.isHdr && (_wcsicmp(ext.c_str(), L".jpg") == 0 ||
+                        _wcsicmp(ext.c_str(), L".jpeg") == 0);
+
     std::wstring title;
     std::wstring selectInExplorer;
-    if (frame.isHdr) {
+    if (wantUltraHdr) {
+        sundial::SaveUltraHdrJpeg(frame, tonemap, png.wstring());
+        selectInExplorer = png.wstring();
+        title = L"Ultra HDR saved  -  " + png.filename().wstring();
+    } else if (frame.isHdr) {
         if (saveHdrJxr) {
             sundial::SaveJxrHdr(frame, jxr.wstring());
             selectInExplorer = jxr.wstring();
@@ -302,13 +314,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     bool fileMode = false;
+    // Set when launched as part of Windows' run-on-startup (the startup entry
+    // passes --startup): the app should drop straight into the tray rather than
+    // flashing the toolbar over whatever the user is doing at login.
+    bool startupMode = false;
     std::wstring filePath;
-    if (argv && argc >= 2) {
-        filePath = argv[1];
-        std::error_code ec;
-        if (std::filesystem::exists(filePath, ec)) fileMode = true;
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            const std::wstring arg = argv[i];
+            if (_wcsicmp(arg.c_str(), L"--startup") == 0) {
+                startupMode = true;
+            } else if (filePath.empty()) {
+                std::error_code ec;
+                if (std::filesystem::exists(arg, ec)) {
+                    filePath = arg;
+                    fileMode = true;
+                }
+            }
+        }
+        LocalFree(argv);
     }
-    if (argv) LocalFree(argv);
 
     if (fileMode) {
         try {
@@ -323,11 +348,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     HANDLE instanceMutex = CreateMutexW(nullptr, TRUE, L"SundialInstance.v1");
-    if (instanceMutex == nullptr || GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBoxW(nullptr,
-                    L"Sundial is already running. Use Task Manager to end the "
-                    L"existing sundial.exe before starting a new one.",
-                    L"Sundial", MB_ICONINFORMATION);
+    const bool alreadyRunning =
+        instanceMutex == nullptr || GetLastError() == ERROR_ALREADY_EXISTS;
+    if (alreadyRunning) {
+        // Don't start a duplicate. A plain re-launch hands off to the resident
+        // instance and asks it to pop the toolbar (so double-clicking the exe
+        // behaves like clicking the tray icon). A startup launch just bows out
+        // quietly - the resident instance is already in the tray.
+        if (!startupMode) {
+            if (HWND running = sundial::FindRunningTrayWindow()) {
+                // The toolbar grabs the foreground; let the resident process do
+                // so even though we (the new, foreground process) are exiting.
+                DWORD pid = 0;
+                GetWindowThreadProcessId(running, &pid);
+                if (pid) AllowSetForegroundWindow(pid);
+                PostMessageW(running, sundial::TrayShowToolbarMessage(), 0, 0);
+            }
+        }
         if (instanceMutex) CloseHandle(instanceMutex);
         CoUninitialize();
         return 0;
@@ -335,6 +372,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     // Register / refresh the "Open with Sundial" right-click verb for .jxr.
     sundial::RegisterJxrAssociation(GetExePath());
+
+    // If Velopack installed a run-on-startup shortcut, make sure it carries
+    // --startup so login launches stay in the tray (vpk creates it argless).
+    sundial::EnsureStartupShortcutArgs();
 
     if (!RegisterHotKey(nullptr, kHotkeyToolbar,
                         MOD_WIN | MOD_SHIFT | MOD_NOREPEAT, 'X')) {
@@ -380,6 +421,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // actually downloaded (then it prompts to restart). Posts WM_QUIT to this
     // thread to exit cleanly before applying.
     sundial::CheckForUpdatesInBackground(/*silent=*/true, g_mainThreadId);
+
+    // Launching the exe (e.g. from the Start menu) docks the tray icon above
+    // and also brings up the toolbar straight away, so the app is immediately
+    // usable instead of silently waiting for the Win+Shift+X hotkey. After the
+    // user finishes (or dismisses) the toolbar, we drop into the tray message
+    // loop and stay resident as usual. A run-on-startup launch (--startup)
+    // skips this and just sits in the tray.
+    if (!startupMode) {
+        runFlow();
+    }
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

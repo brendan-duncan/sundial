@@ -24,6 +24,17 @@ void SavePngTonemapped(const Frame& frame,
                        const TonemapParams& params,
                        const std::wstring& path);
 
+// Write an HDR frame as an Ultra HDR JPEG (.jpg): a normal SDR JPEG (the
+// tonemapped result, identical to what SavePngTonemapped produces) plus an
+// embedded gain map, so SDR viewers see the tonemapped image and HDR-aware
+// viewers (Chrome, Windows Photos, Android, macOS) recover the HDR. The base
+// image uses `params`; the gain map is computed from the linear scRGB source
+// scaled so SDR white maps to 1.0. Requires `frame.isHdr`. Throws on failure,
+// or if the build was configured without libultrahdr (SUNDIAL_HAS_ULTRAHDR).
+void SaveUltraHdrJpeg(const Frame& frame,
+                      const TonemapParams& params,
+                      const std::wstring& path);
+
 // Write an already-SDR frame straight to PNG (no tonemap).
 void SavePngSdr(const Frame& frame, const std::wstring& path);
 

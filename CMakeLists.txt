@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sundial VERSION 1.0.0 LANGUAGES CXX)
+project(sundial VERSION 1.1.0 LANGUAGES CXX)
 
 # App version shown in the About box. Defaults to the project() version; CI and
 # tools/release.ps1 override it with the release tag (-DSUNDIAL_VERSION=x.y.z).
@@ -11,6 +11,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT WIN32)
   message(FATAL_ERROR "Sundial is Windows-only.")
 endif()
+
+# Use the static CRT across the whole statically-linked graph (sundial, imgui,
+# libultrahdr core). libultrahdr's bundled libjpeg-turbo defaults to the static
+# CRT (/MT), so matching it here avoids an LNK4098 CRT-mismatch. Velopack is a
+# DLL import lib and CRT-neutral. Set before FetchContent so fetched
+# subprojects inherit it (CMP0091 is NEW at our cmake_minimum_required).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 include(FetchContent)
 FetchContent_Declare(imgui
@@ -33,6 +40,36 @@ target_include_directories(imgui PUBLIC
 )
 if(MSVC)
   target_compile_options(imgui PRIVATE /W0)
+endif()
+
+# --- Ultra HDR JPEG export (libultrahdr) ------------------------------------
+# Fetched and built from source (it builds its own libjpeg-turbo with SIMD
+# disabled, so no NASM is required). Turn off to build without Ultra HDR
+# export - SaveUltraHdrJpeg() then throws an explanatory error instead.
+option(SUNDIAL_ENABLE_ULTRAHDR "Enable Ultra HDR JPEG export via libultrahdr" ON)
+if(SUNDIAL_ENABLE_ULTRAHDR)
+  set(UHDR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(UHDR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(UHDR_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+  set(UHDR_BUILD_JAVA OFF CACHE BOOL "" FORCE)
+  set(UHDR_BUILD_DEPS ON CACHE BOOL "" FORCE)     # build bundled libjpeg-turbo
+  set(UHDR_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(UHDR_ENABLE_LOGS OFF CACHE BOOL "" FORCE)
+  # Write the gain map metadata in BOTH the XMP/GContainer packet (default off)
+  # and the ISO 21496-1 packet (default on). The XMP form is what Chrome,
+  # Windows Photos, and Android key off; ISO-only is recognised by a much
+  # narrower/newer set of viewers - so without this the file decodes as plain
+  # SDR almost everywhere.
+  set(UHDR_WRITE_XMP ON CACHE BOOL "" FORCE)
+  set(UHDR_WRITE_ISO ON CACHE BOOL "" FORCE)
+  # Build uhdr as a static lib so there's no DLL to ship beside the exe. A
+  # plain (non-cache) variable scopes this to the fetched subproject.
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_Declare(libultrahdr
+    GIT_REPOSITORY https://github.com/google/libultrahdr.git
+    GIT_TAG        v1.4.0
+  )
+  FetchContent_MakeAvailable(libultrahdr)
 endif()
 
 add_executable(sundial WIN32
@@ -84,6 +121,13 @@ target_compile_definitions(sundial PRIVATE
 
 if(MSVC)
   target_compile_options(sundial PRIVATE /W4 /permissive- /Zc:__cplusplus)
+endif()
+
+if(SUNDIAL_ENABLE_ULTRAHDR AND TARGET uhdr)
+  message(STATUS "Sundial: Ultra HDR JPEG export enabled (libultrahdr)")
+  target_link_libraries(sundial PRIVATE uhdr)
+  target_include_directories(sundial PRIVATE "${libultrahdr_SOURCE_DIR}")
+  target_compile_definitions(sundial PRIVATE SUNDIAL_HAS_ULTRAHDR=1)
 endif()
 
 # --- Auto-update support (Velopack) -----------------------------------------

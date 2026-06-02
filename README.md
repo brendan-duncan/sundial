@@ -4,14 +4,15 @@ Windows HDR-aware screen capture utility with support for HDR displays, includin
 
 ![Sundial HDR Editor](sundial_edit_side_by_side.png)
 
-Sundial runs in the Windows tray with no UI until it's invoked. **Win+Shift+X** is registered to invoke the Sundial capture tool.
+Sundial lives in the Windows tray. Launching it (or pressing **Win+Shift+X**) brings up the capture toolbar; the rest of the time it sits quietly in the tray.
 
 ## Installing
 
 Download the latest **Setup.exe** from the
 [Releases page](https://github.com/brendan-duncan/sundial/releases/latest) and
-run it. Sundial installs per-user (no administrator prompt) and starts in the
-tray.
+run it. Sundial installs per-user (no administrator prompt), brings up the
+toolbar so you can capture right away, and sets itself to launch at login
+(staying in the tray on startup rather than popping the toolbar).
 
 Sundial **updates itself**: on launch it quietly checks the Releases page for a
 newer version, downloads it in the background, and offers to restart into it —
@@ -23,8 +24,10 @@ Sundial runs in the background and docks itself to the Windows tray.
 
 ![Sundial Tray Icon](sundial_taskbar.png)
 
-Open the toolbar by clicking the tray icon or pressing **Win+Shift+X**. The
-screen darkens and the toolbar appears at the top of the primary monitor.
+Open the toolbar by clicking the tray icon, pressing **Win+Shift+X**, or
+launching Sundial again (a second launch hands off to the running instance and
+opens its toolbar rather than starting a duplicate). The screen darkens and the
+toolbar appears at the top of the primary monitor.
 
 ![Sundial Toolbar](sundial_toolbar.png)
 
@@ -112,7 +115,11 @@ when **Edit on Capture** is on.
 * **View** — SDR only (hold the SDR button to peek at the unmapped HDR),
   Split (drag the divider), or Side-by-side.
 * **Save** (Ctrl+S), **Save As…** (Ctrl+Shift+X), **Copy** (clipboard),
-  **Cancel** (Ctrl+X).
+  **Cancel** (Ctrl+X). For HDR captures, **Save As…** also offers **Ultra
+  HDR JPEG (`.jpg`)** — a single file whose base image is the tonemapped SDR
+  result (so it looks identical to the `.png` everywhere) but which carries an
+  embedded gain map, so HDR-aware viewers (Chrome, Windows Photos, Android,
+  macOS) recover the HDR from one ordinary-looking JPEG.
 
 ### Hotkeys
 
@@ -149,7 +156,13 @@ Clicking a **screenshot** toast opens that file in the editor; clicking a
 .\build\Release\sundial.exe
 ```
 
-ImGui is fetched on first configure via `FetchContent` — needs internet for the initial configure.
+ImGui and [libultrahdr](https://github.com/google/libultrahdr) (for Ultra HDR
+JPEG export) are fetched on first configure via `FetchContent` — needs internet
+for the initial configure. libultrahdr builds its own libjpeg-turbo from source
+(SIMD disabled, so no NASM needed). `build.bat` sets
+`CMAKE_POLICY_VERSION_MINIMUM=3.5` so that bundled libjpeg-turbo (which targets
+an older CMake) configures under CMake 4.x. Build without Ultra HDR support via
+`-DSUNDIAL_ENABLE_ULTRAHDR=OFF`.
 
 If the build directory is stale (older generator cached), delete it:
 
@@ -181,7 +194,7 @@ Remove-Item -Recurse -Force build
 | `ShaderTonemap.{h,cpp}` | D3D11 pixel-shader version of the same tonemap for live editor preview and video recording. Must stay in sync with `Tonemap.cpp`. `SetSourceTexture()` feeds it a GPU texture directly (no CPU upload) for the recorder |
 | `VideoRecorder.{h,cpp}` | Screen recording. Worker-thread DXGI duplication loop → GPU crop → `ShaderTonemap` HDR→SDR → Media Foundation `IMFSinkWriter` (H.264/MP4). Own D3D11 device, isolated from the main thread |
 | `ImageOps.{h,cpp}` | CPU crop + bilinear resize for both FP16 and BGRA8 frames |
-| `Encoder.{h,cpp}` | WIC writers — JXR (`GUID_ContainerFormatWmp` + `64bppRGBAHalf`), PNG (`32bppBGRA`) |
+| `Encoder.{h,cpp}` | WIC writers — JXR (`GUID_ContainerFormatWmp` + `64bppRGBAHalf`), PNG (`32bppBGRA`). Also `SaveUltraHdrJpeg` — Ultra HDR JPEG (SDR base + embedded gain map) via libultrahdr, fed the tonemapped SDR plus the linear scRGB source scaled so SDR white = 1.0 |
 | `Toast.{h,cpp}` | Bottom-right layered notification window with an optional preview thumbnail. Takes an `onClick` callback (screenshots open the editor, recordings open Explorer). Runs on its own thread |
 | `Toolbar.{h,cpp}` | Top-centre floating toolbar — Full Screen / Record / Edit Image / Settings (Area is drag-on-overlay). Also drives the full video flow: persistent selection with handles, control bar, countdown, recording. Settings is a `TrackPopupMenu` (no dialog) |
 | `AreaSelector.{h,cpp}` | Full-screen layered overlay; drag rectangle, ESC/right-click cancels |
