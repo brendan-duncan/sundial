@@ -1,3 +1,13 @@
+# 1.1.0
+
+* **Image Snapshot Formats** setting — pick any combination of output formats a
+  snapshot writes: **PNG (SDR)**, **JPEG XR (HDR)**, and **Ultra HDR JPEG
+  (SDR+HDR)**. Replaces the single **Save HDR Image (JXR)** toggle.
+* **Settings…** is now available from inside the editor (gear button), not just
+  the toolbar gear menu. Both edit the same `settings.ini`.
+* Editors now run as separate processes, so you can take new snapshots — and
+  open several editors — while an editor is already open.
+
 # 1.0.0
 
 * Installer and automatic updates via [Velopack](https://velopack.io). Sundial

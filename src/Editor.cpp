@@ -4,6 +4,7 @@
 #include "ImageOps.h"
 #include "Resource.h"
 #include "ShaderTonemap.h"
+#include "ShellIntegration.h"
 #include "Tonemap.h"
 
 #include <Windows.h>
@@ -199,8 +200,13 @@ struct EditorContext {
     bool cropDragMoved = false;   // true once mouse has moved >threshold px
     ImVec2 cropDragAnchor{};
 
-    // Save HDR JXR (mirrors AppSettings::saveHdrJxr while the editor runs).
-    bool saveHdrJxr = true;
+    // App settings mirrored while the editor runs. The Settings popup edits
+    // these and writes them straight back to settings.ini (so the tray and any
+    // other editor process pick them up); they're also returned in
+    // EditorResult.updatedSettings on save.
+    SnapshotFormats snapshot;
+    bool editOnCapture = false;
+    bool autoCopyCapture = true;
 
     // When non-empty, the Save button overwrites this path and Save As
     // opens its dialog with this directory + stem pre-filled. Empty for a
@@ -450,7 +456,7 @@ void ResizeSwapChain(EditorContext& ctx) {
     CreateBackbufferRtv(ctx);
 }
 
-enum class IconKind { None, Save, SaveAs, Copy, Cancel, Hdr, Sdr };
+enum class IconKind { None, Save, SaveAs, Copy, Cancel, Hdr, Sdr, Gear };
 
 void DrawIcon(ImDrawList* dl, ImVec2 c, IconKind kind) {
     const ImU32 col = IM_COL32(220, 220, 220, 255);
@@ -506,6 +512,18 @@ void DrawIcon(ImDrawList* dl, ImVec2 c, IconKind kind) {
             // Solid square, like a flat monitor
             dl->AddRectFilled({c.x - r, c.y - r * 0.6f},
                               {c.x + r, c.y + r * 0.6f}, col);
+            break;
+        }
+        case IconKind::Gear: {
+            // Cog: a ring plus 8 short teeth, hollow center.
+            dl->AddCircle(c, r * 0.62f, col, 16, 1.4f);
+            dl->AddCircleFilled(c, r * 0.22f, col);
+            for (int i = 0; i < 8; ++i) {
+                const float a = i * 0.7853981633f;
+                const float ca = cosf(a), sa = sinf(a);
+                dl->AddLine({c.x + ca * r * 0.62f, c.y + sa * r * 0.62f},
+                            {c.x + ca * r, c.y + sa * r}, col, 1.6f);
+            }
             break;
         }
         default: break;
@@ -673,6 +691,7 @@ bool DoSaveAs(EditorContext& ctx) {
                        ctx.source && ctx.source->isHdr);
     if (path.empty()) return false;
     ctx.result.outputPath = path;
+    ctx.result.explicitPath = true;  // one explicit file, not the format set
     ctx.result.saved = true;
     ctx.exitRequested = true;
     return true;
@@ -692,6 +711,97 @@ bool EditsMade(const EditorContext& ctx) {
     }
     return ctx.resizeW != int(ctx.source->width) ||
            ctx.resizeH != int(ctx.source->height);
+}
+
+// Persist the settings the popup edits straight to settings.ini. Load the
+// current file first and patch only the fields the editor owns, so we don't
+// clobber anything written by another process; carry the editor's live tonemap
+// too (matching the existing "editor save writes the look back" behavior).
+void PersistEditorSettings(const EditorContext& ctx) {
+    AppSettings cur = LoadSettings();
+    cur.snapshot = ctx.snapshot;
+    cur.editOnCapture = ctx.editOnCapture;
+    cur.autoCopyCapture = ctx.autoCopyCapture;
+    cur.outputFolder = ctx.outputFolder;
+    cur.tonemap = ctx.params;
+    SaveSettings(cur);
+}
+
+void DrawSettingsPopup(EditorContext& ctx) {
+    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Settings", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings)) {
+        return;
+    }
+
+    bool changed = false;
+
+    ImGui::TextUnformatted("Image Snapshot Formats");
+    ImGui::TextDisabled("Video recording has its own format settings.");
+    ImGui::Separator();
+
+    changed |= ImGui::Checkbox("PNG (SDR)", &ctx.snapshot.png);
+    changed |= ImGui::Checkbox("JPEG XR / .jxr (HDR)", &ctx.snapshot.jxr);
+#ifdef SUNDIAL_HAS_ULTRAHDR
+    changed |= ImGui::Checkbox("Ultra HDR JPEG / .jpg (SDR+HDR)",
+                               &ctx.snapshot.ultraHdrJpeg);
+#else
+    ImGui::BeginDisabled();
+    bool noUltra = false;
+    ImGui::Checkbox("Ultra HDR JPEG / .jpg (not built)", &noUltra);
+    ImGui::EndDisabled();
+#endif
+    if (ctx.source && !ctx.source->isHdr) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                           "Current capture is SDR - only PNG will be written.");
+    }
+
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Separator();
+
+    changed |= ImGui::Checkbox("Edit on Capture", &ctx.editOnCapture);
+    changed |= ImGui::Checkbox("Auto Copy Capture", &ctx.autoCopyCapture);
+
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextUnformatted("Output Folder");
+    AppSettings probe{};
+    probe.outputFolder = ctx.outputFolder;
+    const std::string folderUtf8 =
+        WideToUtf8(ResolveOutputDir(probe).wstring());
+    ImGui::TextWrapped("%s", folderUtf8.c_str());
+    if (ImGui::Button("Change...")) {
+        const std::wstring seed = ctx.outputFolder.empty()
+                                      ? DefaultOutputDir().wstring()
+                                      : ctx.outputFolder;
+        std::wstring picked = PickFolderDialog(ctx.hwnd, seed);
+        if (!picked.empty()) {
+            ctx.outputFolder =
+                (picked == DefaultOutputDir().wstring()) ? std::wstring{}
+                                                         : picked;
+            changed = true;
+        }
+    }
+    ImGui::SameLine();
+    const bool customFolder = !ctx.outputFolder.empty();
+    if (!customFolder) ImGui::BeginDisabled();
+    if (ImGui::Button("Reset to Default")) {
+        ctx.outputFolder.clear();
+        changed = true;
+    }
+    if (!customFolder) ImGui::EndDisabled();
+
+    if (changed) PersistEditorSettings(ctx);
+
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::Separator();
+    // Escape closes the popup via ImGui's built-in modal handling (matching the
+    // preset dialogs); the editor's own Esc handler is suppressed while any
+    // popup is open, so we don't double-handle it here.
+    if (ImGui::Button("Close", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void DrawOutputSection(EditorContext& ctx) {
@@ -733,21 +843,13 @@ void DrawOutputSection(EditorContext& ctx) {
                            "Copied to clipboard");
     }
 
-    // HDR JXR toggle as a row with the sun icon next to the checkbox.
+    // The output-format choice (and other app settings) now live in the
+    // Settings popup, reachable from here.
     ImGui::Dummy(ImVec2(0, 4));
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    auto* dl = ImGui::GetWindowDrawList();
-    DrawIcon(dl, ImVec2(cursor.x + 8, cursor.y + 9), IconKind::Hdr);
-    ImGui::Dummy(ImVec2(20, 0));
-    ImGui::SameLine();
-    if (ctx.source->isHdr) {
-        ImGui::Checkbox("Save HDR Image (JXR)", &ctx.saveHdrJxr);
-    } else {
-        ImGui::BeginDisabled();
-        bool dummy = false;
-        ImGui::Checkbox("Save HDR Image (JXR) - capture is SDR", &dummy);
-        ImGui::EndDisabled();
+    if (IconButton("settings", "Settings...", IconKind::Gear, kBtn)) {
+        ImGui::OpenPopup("Settings");
     }
+    DrawSettingsPopup(ctx);
 }
 
 void DrawSidebar(EditorContext& ctx) {
@@ -1233,7 +1335,9 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     ctx.resizeW = int(source.width);
     ctx.resizeH = int(source.height);
     ctx.aspect = float(source.width) / float(std::max(1u, source.height));
-    ctx.saveHdrJxr = settings.saveHdrJxr;
+    ctx.snapshot = settings.snapshot;
+    ctx.editOnCapture = settings.editOnCapture;
+    ctx.autoCopyCapture = settings.autoCopyCapture;
     ctx.presetNames = ListPresets();
 
     EnsureClassRegistered();
@@ -1364,6 +1468,7 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
                                                        ctx.source->isHdr);
                 if (!path.empty()) {
                     ctx.result.outputPath = path;
+                    ctx.result.explicitPath = true;
                     ctx.result.saved = true;
                     ctx.exitRequested = true;
                 }
@@ -1419,7 +1524,10 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
 
     if (ctx.result.saved) {
         ctx.result.updatedSettings.tonemap = ctx.params;
-        ctx.result.updatedSettings.saveHdrJxr = ctx.saveHdrJxr;
+        ctx.result.updatedSettings.snapshot = ctx.snapshot;
+        ctx.result.updatedSettings.editOnCapture = ctx.editOnCapture;
+        ctx.result.updatedSettings.autoCopyCapture = ctx.autoCopyCapture;
+        ctx.result.updatedSettings.outputFolder = ctx.outputFolder;
         // Look-picker mode returns params only; no still is produced.
         if (!ctx.tonemapOnly) {
             ctx.result.editedFrame = ProduceEditedFrame(ctx);

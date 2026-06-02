@@ -80,13 +80,30 @@ struct TonemapParams {
     float sourcePeakNits = 1000.0f;
 };
 
+// Image-snapshot output formats. A snapshot writes every enabled format that
+// applies to the captured frame (PNG always applies; JXR and Ultra HDR JPEG are
+// HDR-only). The default PNG + JXR preserves the prior save_hdr_jxr=true
+// behavior. Video recording has its own format settings (future) - these are
+// for still snapshots only.
+struct SnapshotFormats {
+    bool png = true;            // PNG (SDR tonemapped, or SDR passthrough)
+    bool jxr = true;            // JPEG XR / .jxr (HDR only)
+    bool ultraHdrJpeg = false;  // Ultra HDR JPEG / .jpg (SDR+HDR, HDR only)
+};
+
+// True if at least one enabled format would produce a file for a frame with the
+// given HDR-ness. PNG always qualifies; the HDR formats only when isHdr.
+inline bool AnySnapshotFormatApplies(const SnapshotFormats& f, bool isHdr) {
+    return f.png || (isHdr && (f.jxr || f.ultraHdrJpeg));
+}
+
 struct AppSettings {
     // Snipping-Tool-style default: a capture saves with the current conversion
     // settings, copies to the clipboard, and shows a toast - it does NOT open
     // the editor. Clicking the toast preview opens the editor. Flip this on in
     // Settings to jump straight into the editor on every capture instead.
     bool editOnCapture = false;
-    bool saveHdrJxr = true;       // write a .jxr alongside the .png when capture is HDR
+    SnapshotFormats snapshot;     // which image formats a snapshot writes
     bool autoCopyCapture = true;  // copy the SDR result to the clipboard after each capture
     // Where saves go. Empty = the platform default returned by
     // DefaultOutputDir() (<user>/Pictures/Sundial). Resolve via

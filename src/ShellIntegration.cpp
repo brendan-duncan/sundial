@@ -38,6 +38,41 @@ void RegisterJxrAssociation(const std::wstring& exePath) {
     WriteString(verbKey + L"\\command", nullptr, command);
 }
 
+std::wstring PickFolderDialog(void* owner, const std::wstring& seedFolder) {
+    IFileOpenDialog* dlg = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                                IID_PPV_ARGS(&dlg)))) {
+        return {};
+    }
+    DWORD opts = 0;
+    dlg->GetOptions(&opts);
+    dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST |
+                    FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
+    dlg->SetTitle(L"Choose output folder");
+    if (!seedFolder.empty()) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(seedFolder.c_str(), nullptr,
+                                                  IID_PPV_ARGS(&item)))) {
+            dlg->SetFolder(item);
+            item->Release();
+        }
+    }
+    std::wstring chosen;
+    if (SUCCEEDED(dlg->Show(reinterpret_cast<HWND>(owner)))) {
+        IShellItem* result = nullptr;
+        if (SUCCEEDED(dlg->GetResult(&result))) {
+            PWSTR p = nullptr;
+            if (SUCCEEDED(result->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                chosen = p;
+                CoTaskMemFree(p);
+            }
+            result->Release();
+        }
+    }
+    dlg->Release();
+    return chosen;
+}
+
 void EnsureStartupShortcutArgs() {
     PWSTR startupDir = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Startup, 0, nullptr,

@@ -47,6 +47,28 @@ std::wstring Utf8ToWide(const std::string& s) {
     return w;
 }
 
+// Cross-process guard around settings.ini I/O. Multiple Sundial processes (the
+// tray plus any number of editor children) read and write the same file, so
+// LoadSettings / SaveSettings hold this named mutex to keep whole-file writes
+// atomic with respect to one another and to readers. Best-effort: if the mutex
+// can't be created we proceed unguarded (the parser already tolerates torn
+// lines).
+struct SettingsFileLock {
+    HANDLE handle = nullptr;
+    SettingsFileLock() {
+        handle = CreateMutexW(nullptr, FALSE, L"SundialSettings.v1");
+        if (handle) WaitForSingleObject(handle, 2000);
+    }
+    ~SettingsFileLock() {
+        if (handle) {
+            ReleaseMutex(handle);
+            CloseHandle(handle);
+        }
+    }
+    SettingsFileLock(const SettingsFileLock&) = delete;
+    SettingsFileLock& operator=(const SettingsFileLock&) = delete;
+};
+
 std::filesystem::path PresetsDir() {
     auto dir = AppDataDir() / L"presets";
     std::error_code ec;
@@ -158,8 +180,17 @@ std::filesystem::path ResolveOutputDir(const AppSettings& settings) {
 
 AppSettings LoadSettings() {
     AppSettings s;
+    SettingsFileLock lock;
     std::ifstream f(SettingsFilePath());
     if (!f) return s;
+
+    auto asBool = [](const std::string& v) { return v == "true" || v == "1"; };
+
+    // Legacy migration: the old single boolean save_hdr_jxr maps onto
+    // snapshot.jxr, but only when no explicit snapshot_jxr line is present (so a
+    // newer file always wins). PNG stays on by default.
+    bool sawSnapshotJxr = false;
+    bool legacyJxr = s.snapshot.jxr;
 
     std::string line;
     while (std::getline(f, line)) {
@@ -170,25 +201,37 @@ AppSettings LoadSettings() {
         if (key.empty()) continue;
 
         if (key == "edit_on_capture") {
-            s.editOnCapture = (value == "true" || value == "1");
+            s.editOnCapture = asBool(value);
+        } else if (key == "snapshot_png") {
+            s.snapshot.png = asBool(value);
+        } else if (key == "snapshot_jxr") {
+            s.snapshot.jxr = asBool(value);
+            sawSnapshotJxr = true;
+        } else if (key == "snapshot_ultrahdr_jpeg") {
+            s.snapshot.ultraHdrJpeg = asBool(value);
         } else if (key == "save_hdr_jxr") {
-            s.saveHdrJxr = (value == "true" || value == "1");
+            legacyJxr = asBool(value);
         } else if (key == "auto_copy_capture") {
-            s.autoCopyCapture = (value == "true" || value == "1");
+            s.autoCopyCapture = asBool(value);
         } else if (key == "output_folder") {
             s.outputFolder = Utf8ToWide(value);
         } else {
             ApplyTonemapKey(s.tonemap, key, value);
         }
     }
+    if (!sawSnapshotJxr) s.snapshot.jxr = legacyJxr;
     return s;
 }
 
 void SaveSettings(const AppSettings& s) {
+    SettingsFileLock lock;
     std::ofstream f(SettingsFilePath(), std::ios::trunc);
     if (!f) return;
     f << "edit_on_capture = " << (s.editOnCapture ? "true" : "false") << "\n";
-    f << "save_hdr_jxr = " << (s.saveHdrJxr ? "true" : "false") << "\n";
+    f << "snapshot_png = " << (s.snapshot.png ? "true" : "false") << "\n";
+    f << "snapshot_jxr = " << (s.snapshot.jxr ? "true" : "false") << "\n";
+    f << "snapshot_ultrahdr_jpeg = "
+      << (s.snapshot.ultraHdrJpeg ? "true" : "false") << "\n";
     f << "auto_copy_capture = " << (s.autoCopyCapture ? "true" : "false")
       << "\n";
     f << "output_folder = " << WideToUtf8(s.outputFolder) << "\n";

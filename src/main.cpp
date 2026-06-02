@@ -5,6 +5,7 @@
 #include <shlobj.h>
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -89,46 +90,118 @@ std::wstring Timestamp() {
     return buf;
 }
 
+// Defined below; declared here so SaveAndNotify's toast can re-open a saved
+// file in a fresh editor process, and HandleCapture can hand a capture off to
+// a child editor process.
+std::wstring GetExePath();
+void SpawnEditorForFile(const std::wstring& path);
+void SpawnEditorForFrame(const sundial::Frame& frame,
+                         const sundial::AppSettings& settings);
+
+// How a target path was chosen, which decides whether the snapshot format set
+// applies. Snapshot = the implicit Save / capture target (a .png base path that
+// fans out into every enabled format). ExplicitFile = a single file the user
+// picked via Save As, written verbatim.
+enum class SaveMode { Snapshot, ExplicitFile };
+
+// `inChildProcess` is true when called from a short-lived editor process: the
+// save toast then runs on the calling thread (so the process stays alive to
+// show it) and clicking it spawns a new editor process. In the resident tray
+// process it's false: the toast is async and clicking marshals to the main
+// thread's editor.
 void SaveAndNotify(const sundial::Frame& frame,
                    const sundial::TonemapParams& tonemap,
-                   bool saveHdrJxr,
-                   const std::wstring& pngPath) {
+                   const sundial::SnapshotFormats& formats,
+                   SaveMode mode,
+                   const std::wstring& pngPath,
+                   bool inChildProcess) {
     std::filesystem::path png = pngPath;
-    std::filesystem::path jxr = png;
-    jxr.replace_extension(L".jxr");
     const std::wstring stem = png.stem().wstring();
     const std::wstring dir = png.parent_path().wstring();
 
-    // Save As can target Ultra HDR (.jpg): a single SDR JPEG with an embedded
-    // gain map. Only meaningful for HDR sources, so a .jpg from an SDR frame
-    // still falls through to the plain PNG path below.
+    std::wstring title;
+    std::wstring selectInExplorer;
+    std::wstring extraNote;
+
+    // Save As targets exactly one file. Ultra HDR (.jpg) is only meaningful for
+    // HDR sources; a .jpg from an SDR frame falls through to a plain PNG.
     const std::wstring ext = png.extension().wstring();
-    const bool wantUltraHdr =
+    const bool explicitUltraHdr =
         frame.isHdr && (_wcsicmp(ext.c_str(), L".jpg") == 0 ||
                         _wcsicmp(ext.c_str(), L".jpeg") == 0);
 
-    std::wstring title;
-    std::wstring selectInExplorer;
-    if (wantUltraHdr) {
+    if (mode == SaveMode::ExplicitFile && explicitUltraHdr) {
         sundial::SaveUltraHdrJpeg(frame, tonemap, png.wstring());
         selectInExplorer = png.wstring();
         title = L"Ultra HDR saved  -  " + png.filename().wstring();
-    } else if (frame.isHdr) {
-        if (saveHdrJxr) {
-            sundial::SaveJxrHdr(frame, jxr.wstring());
-            selectInExplorer = jxr.wstring();
-            title = L"HDR saved  -  " + stem + L".jxr + .png";
+    } else if (mode == SaveMode::ExplicitFile) {
+        // A single explicit PNG (SDR passthrough or tonemapped HDR).
+        if (frame.isHdr) {
+            sundial::SavePngTonemapped(frame, tonemap, png.wstring());
         } else {
-            title = L"HDR saved  -  " + stem + L".png";
+            sundial::SavePngSdr(frame, png.wstring());
         }
-        sundial::SavePngTonemapped(frame, tonemap, png.wstring());
-        if (selectInExplorer.empty()) selectInExplorer = png.wstring();
-    } else {
-        sundial::SavePngSdr(frame, png.wstring());
-        title = L"Saved  -  " + stem + L".png";
         selectInExplorer = png.wstring();
+        title = L"Saved  -  " + png.filename().wstring();
+    } else {
+        // Snapshot mode: write every enabled + applicable format off the base
+        // dir + stem. PNG always applies; JXR / Ultra HDR are HDR-only. Track
+        // the richest written file (jxr > png > jpg) for the toast's re-edit
+        // target and the Explorer selection.
+        std::filesystem::path base = png;
+        const std::filesystem::path pngFile = base.replace_extension(L".png");
+        std::filesystem::path jxrFile = pngFile;
+        jxrFile.replace_extension(L".jxr");
+        std::filesystem::path jpgFile = pngFile;
+        jpgFile.replace_extension(L".jpg");
+
+        std::vector<std::wstring> wrote;  // extensions written, for the title
+        bool wrotePng = false;
+
+        auto writePng = [&] {
+            if (frame.isHdr) {
+                sundial::SavePngTonemapped(frame, tonemap, pngFile.wstring());
+            } else {
+                sundial::SavePngSdr(frame, pngFile.wstring());
+            }
+            wrotePng = true;
+            wrote.push_back(L".png");
+            if (selectInExplorer.empty()) selectInExplorer = pngFile.wstring();
+        };
+
+        if (formats.jxr && frame.isHdr) {
+            sundial::SaveJxrHdr(frame, jxrFile.wstring());
+            wrote.push_back(L".jxr");
+            selectInExplorer = jxrFile.wstring();  // richest: prefer JXR
+        }
+#ifdef SUNDIAL_HAS_ULTRAHDR
+        if (formats.ultraHdrJpeg && frame.isHdr) {
+            sundial::SaveUltraHdrJpeg(frame, tonemap, jpgFile.wstring());
+            wrote.push_back(L".jpg");
+            if (selectInExplorer.empty()) selectInExplorer = jpgFile.wstring();
+        }
+#endif
+        if (formats.png) writePng();
+
+        // Guarantee a snapshot always produces something. If only HDR formats
+        // were enabled but the capture is SDR (or every enabled format was
+        // inapplicable), fall back to the universal PNG.
+        if (wrote.empty()) {
+            writePng();
+            extraNote = L"\n(only HDR formats enabled; saved PNG)";
+        }
+        (void)wrotePng;
+
+        std::wstring list = stem;  // "name.jxr + .png + .jpg"
+        for (size_t i = 0; i < wrote.size(); ++i) {
+            if (i) list += L" + ";
+            list += wrote[i];
+        }
+        const wchar_t* prefix = frame.isHdr ? L"HDR saved  -  " : L"Saved  -  ";
+        title = prefix + list;
     }
-    const std::wstring body = dir + L"\n(click the preview to edit)";
+    const std::wstring body =
+        dir + extraNote + L"\n(click the preview to edit)";
 
     uint32_t thumbW = 0, thumbH = 0;
     std::vector<uint8_t> thumb = MakeToastThumbnail(frame, tonemap,
@@ -139,36 +212,40 @@ void SaveAndNotify(const sundial::Frame& frame,
     // PNG). The toast lives on its own thread, so marshal back to the main
     // thread - the editor is modal and must run there.
     const std::wstring editPath = selectInExplorer;
-    auto onClick = [editPath] {
-        wchar_t* heapPath = _wcsdup(editPath.c_str());
-        if (!heapPath) return;
-        if (!PostThreadMessageW(g_mainThreadId, kMsgEditFile, 0,
-                                reinterpret_cast<LPARAM>(heapPath))) {
-            free(heapPath);
-        }
-    };
-    sundial::ShowToast(title, body, std::move(onClick),
-                       std::move(thumb), thumbW, thumbH);
+    if (inChildProcess) {
+        // We're about to exit; host the toast on this thread so it's visible,
+        // and re-open via a brand-new editor process on click.
+        auto onClick = [editPath] { SpawnEditorForFile(editPath); };
+        sundial::ShowToastBlocking(title, body, std::move(onClick),
+                                   std::move(thumb), thumbW, thumbH);
+    } else {
+        auto onClick = [editPath] {
+            wchar_t* heapPath = _wcsdup(editPath.c_str());
+            if (!heapPath) return;
+            if (!PostThreadMessageW(g_mainThreadId, kMsgEditFile, 0,
+                                    reinterpret_cast<LPARAM>(heapPath))) {
+                free(heapPath);
+            }
+        };
+        sundial::ShowToast(title, body, std::move(onClick),
+                           std::move(thumb), thumbW, thumbH);
+    }
 }
 
 void HandleCapture(sundial::AppSettings& settings, sundial::Frame frame) {
-    sundial::SeedTonemapForFrame(settings.tonemap, frame);
     if (settings.editOnCapture) {
-        auto result = sundial::RunEditor(frame, settings);
-        if (!result.saved) return;
-        settings.tonemap = result.updatedSettings.tonemap;
-        settings.saveHdrJxr = result.updatedSettings.saveHdrJxr;
-        sundial::SaveSettings(settings);
-        SaveAndNotify(result.editedFrame, settings.tonemap,
-                      settings.saveHdrJxr, result.outputPath);
-        if (settings.autoCopyCapture) {
-            sundial::CopyFrameToClipboard(result.editedFrame, settings.tonemap);
-        }
+        // Hand the capture to a separate editor process so the tray stays free
+        // to capture again while the editor is open (and to allow several
+        // editors at once). The child seeds the tonemap from the frame itself.
+        SpawnEditorForFrame(frame, settings);
     } else {
+        // Direct save in the tray process - no editor, so this stays in-process.
+        sundial::SeedTonemapForFrame(settings.tonemap, frame);
         const auto base =
             sundial::ResolveOutputDir(settings) / (L"sundial_" + Timestamp());
         const std::wstring png = base.wstring() + L".png";
-        SaveAndNotify(frame, settings.tonemap, settings.saveHdrJxr, png);
+        SaveAndNotify(frame, settings.tonemap, settings.snapshot,
+                      SaveMode::Snapshot, png, /*inChildProcess=*/false);
         if (settings.autoCopyCapture) {
             sundial::CopyFrameToClipboard(frame, settings.tonemap);
         }
@@ -180,12 +257,14 @@ void NotifyVideoSaved(const std::wstring& videoPath);
 
 void RunToolbarFlow(sundial::AppSettings& settings) {
     const bool prevEditOnCapture = settings.editOnCapture;
-    const bool prevSaveHdrJxr = settings.saveHdrJxr;
+    const sundial::SnapshotFormats prevSnapshot = settings.snapshot;
     const bool prevAutoCopy = settings.autoCopyCapture;
     const std::wstring prevOutputFolder = settings.outputFolder;
     auto result = sundial::ShowToolbar(settings);
     if (settings.editOnCapture != prevEditOnCapture ||
-        settings.saveHdrJxr != prevSaveHdrJxr ||
+        settings.snapshot.png != prevSnapshot.png ||
+        settings.snapshot.jxr != prevSnapshot.jxr ||
+        settings.snapshot.ultraHdrJpeg != prevSnapshot.ultraHdrJpeg ||
         settings.autoCopyCapture != prevAutoCopy ||
         settings.outputFolder != prevOutputFolder) {
         sundial::SaveSettings(settings);
@@ -238,6 +317,99 @@ std::wstring GetExePath() {
     return std::wstring(buf, n);
 }
 
+std::wstring QuoteArg(const std::wstring& s) { return L"\"" + s + L"\""; }
+
+// Launch a detached child sundial.exe to run an editor, then return at once.
+// The child takes the pre-singleton early-exit path (see wWinMain), so it never
+// registers the hotkey or tray and many can run concurrently while the resident
+// process keeps capturing.
+void SpawnEditorChild(const std::wstring& args) {
+    const std::wstring exe = GetExePath();
+    std::wstring cmd = QuoteArg(exe) + L" " + args;
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
+    const std::wstring exeDir =
+        std::filesystem::path(exe).parent_path().wstring();
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(exe.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
+                       0, nullptr, exeDir.c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
+
+void SpawnEditorForFile(const std::wstring& path) {
+    SpawnEditorChild(L"--edit " + QuoteArg(path));
+}
+
+// %TEMP%\sundial_handoff_<pid>_<ts>_<tick>.<ext> - unique per capture so two
+// snapshots in the same second don't collide.
+std::wstring HandoffTempPath(const wchar_t* ext) {
+    wchar_t tempDir[MAX_PATH];
+    DWORD n = GetTempPathW(MAX_PATH, tempDir);
+    std::filesystem::path dir = (n > 0 && n < MAX_PATH)
+                                    ? std::filesystem::path(tempDir)
+                                    : std::filesystem::temp_directory_path();
+    std::wstring name = L"sundial_handoff_" +
+                        std::to_wstring(GetCurrentProcessId()) + L"_" +
+                        Timestamp() + L"_" +
+                        std::to_wstring(GetTickCount64()) + ext;
+    return (dir / name).wstring();
+}
+
+void SpawnEditorForFrame(const sundial::Frame& frame,
+                         const sundial::AppSettings& settings) {
+    // Hand the in-memory frame to the child losslessly via a temp file: JXR for
+    // HDR (FP16 scRGB round-trips), PNG for SDR. The child reads it back and
+    // restores the seed metadata the temp can't carry.
+    const std::wstring temp = HandoffTempPath(frame.isHdr ? L".jxr" : L".png");
+    try {
+        if (frame.isHdr) {
+            sundial::SaveJxrHdr(frame, temp);
+        } else {
+            sundial::SavePngSdr(frame, temp);
+        }
+    } catch (const std::exception& e) {
+        MessageBoxA(nullptr, e.what(), "Sundial - couldn't open editor",
+                    MB_ICONERROR);
+        return;
+    }
+
+    wchar_t sdrWhite[64], maxLum[64];
+    swprintf_s(sdrWhite, L"%.6f", frame.sdrWhiteLevelNits);
+    swprintf_s(maxLum, L"%.6f", frame.maxLuminanceNits);
+    std::wstring args = L"--edit-temp " + QuoteArg(temp) +
+                        L" --seed-hdr " + (frame.isHdr ? L"1" : L"0") +
+                        L" --seed-sdrwhite " + sdrWhite +
+                        L" --seed-maxlum " + maxLum +
+                        L" --copy " + (settings.autoCopyCapture ? L"1" : L"0");
+    SpawnEditorChild(args);
+}
+
+// Delete handoff temp files older than an hour - leftovers from editor
+// processes that crashed before deleting their own. The age threshold keeps us
+// well clear of temps that a currently-open editor still owns.
+void SweepStaleHandoffTemps() {
+    wchar_t tempDir[MAX_PATH];
+    DWORD n = GetTempPathW(MAX_PATH, tempDir);
+    if (n == 0 || n >= MAX_PATH) return;
+    std::error_code ec;
+    const auto cutoff =
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    for (std::filesystem::directory_iterator it(tempDir, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        const auto& p = it->path();
+        if (p.filename().wstring().rfind(L"sundial_handoff_", 0) != 0) continue;
+        std::error_code tec;
+        if (std::filesystem::last_write_time(p, tec) < cutoff && !tec) {
+            std::filesystem::remove(p, tec);
+        }
+    }
+}
+
 std::wstring PickImageToOpen(HWND owner) {
     wchar_t fileName[MAX_PATH] = {};
     OPENFILENAMEW ofn{};
@@ -281,20 +453,63 @@ void EditExistingFile(sundial::AppSettings& settings,
         sundial::RunEditor(frame, settings, defaultSave.wstring());
     if (!result.saved) return;
     settings.tonemap = result.updatedSettings.tonemap;
-    settings.saveHdrJxr = result.updatedSettings.saveHdrJxr;
+    settings.snapshot = result.updatedSettings.snapshot;
     sundial::SaveSettings(settings);
-    SaveAndNotify(result.editedFrame, settings.tonemap,
-                  settings.saveHdrJxr, result.outputPath);
+    const SaveMode mode =
+        result.explicitPath ? SaveMode::ExplicitFile : SaveMode::Snapshot;
+    SaveAndNotify(result.editedFrame, settings.tonemap, settings.snapshot,
+                  mode, result.outputPath, /*inChildProcess=*/true);
+}
+
+// Child-process flow for a freshly-captured frame handed off via a temp file
+// (see SpawnEditorForFrame). Saving writes a new timestamped snapshot to the
+// resolved output dir; the temp is always deleted on the way out.
+void EditCapturedTemp(sundial::AppSettings& settings,
+                      const std::wstring& tempPath, bool seedHdr,
+                      float seedSdrWhite, float seedMaxLum,
+                      bool copyToClipboard) {
+    struct TempCleanup {
+        std::wstring path;
+        ~TempCleanup() { DeleteFileW(path.c_str()); }
+    } cleanup{tempPath};
+
+    sundial::Frame frame;
+    try {
+        frame = sundial::LoadFrameFromFile(tempPath);
+    } catch (const std::exception& e) {
+        MessageBoxA(nullptr, e.what(), "Sundial - couldn't open capture",
+                    MB_ICONERROR);
+        return;
+    }
+    // The temp round-trips pixels but not display metadata; restore the fields
+    // SeedTonemapForFrame needs from the values the capturer passed.
+    frame.isHdr = seedHdr;
+    frame.sdrWhiteLevelNits = seedSdrWhite;
+    frame.maxLuminanceNits = seedMaxLum;
+
+    sundial::SeedTonemapForFrame(settings.tonemap, frame);
+    auto result = sundial::RunEditor(frame, settings);  // empty save target
+    if (!result.saved) return;
+    settings.tonemap = result.updatedSettings.tonemap;
+    settings.snapshot = result.updatedSettings.snapshot;
+    sundial::SaveSettings(settings);
+    // Copy before the toast: SaveAndNotify's child-process toast blocks this
+    // thread until dismissed, and the clipboard should be ready immediately.
+    if (copyToClipboard) {
+        sundial::CopyFrameToClipboard(result.editedFrame, settings.tonemap);
+    }
+    const SaveMode mode =
+        result.explicitPath ? SaveMode::ExplicitFile : SaveMode::Snapshot;
+    SaveAndNotify(result.editedFrame, settings.tonemap, settings.snapshot,
+                  mode, result.outputPath, /*inChildProcess=*/true);
 }
 
 void RunEditImageFlow(sundial::AppSettings& settings) {
+    (void)settings;
     std::wstring path = PickImageToOpen(nullptr);
     if (path.empty()) return;
-    try {
-        EditExistingFile(settings, path);
-    } catch (const std::exception& e) {
-        MessageBoxA(nullptr, e.what(), "Sundial edit failed", MB_ICONERROR);
-    }
+    // Open the file in a separate editor process so the tray keeps running.
+    SpawnEditorForFile(path);
 }
 
 }  // namespace
@@ -308,37 +523,72 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    // CLI: if launched with a file path (e.g. via "Open with Sundial"), edit
-    // that one file then exit. This path bypasses the singleton / hotkey /
-    // tray so it can coexist with a running tray instance.
+    // CLI: editor invocations run as standalone, short-lived processes that
+    // bypass the singleton / hotkey / tray, so the resident instance can keep
+    // capturing while any number of editors are open.
+    //   --edit <path>           edit an existing image (also a bare path, for
+    //                           the "Open with Sundial" shell verb)
+    //   --edit-temp <path>      edit a freshly-captured frame handed off via a
+    //                           temp file; deletes the temp and saves a fresh
+    //                           timestamped snapshot to the output dir
+    //   --seed-hdr/-sdrwhite/-maxlum  restore the capture's display metadata
+    //   --copy <0|1>            copy the edited result to the clipboard on save
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    bool fileMode = false;
+    enum class EditMode { None, File, Temp };
+    EditMode editMode = EditMode::None;
+    std::wstring editPath;
+    bool seedHdr = false;
+    float seedSdrWhite = 80.0f;
+    float seedMaxLum = 80.0f;
+    bool copyToClipboard = false;
     // Set when launched as part of Windows' run-on-startup (the startup entry
     // passes --startup): the app should drop straight into the tray rather than
     // flashing the toolbar over whatever the user is doing at login.
     bool startupMode = false;
-    std::wstring filePath;
     if (argv) {
+        auto nextArg = [&](int& i) -> std::wstring {
+            return (i + 1 < argc) ? std::wstring(argv[++i]) : std::wstring{};
+        };
         for (int i = 1; i < argc; ++i) {
             const std::wstring arg = argv[i];
             if (_wcsicmp(arg.c_str(), L"--startup") == 0) {
                 startupMode = true;
-            } else if (filePath.empty()) {
+            } else if (_wcsicmp(arg.c_str(), L"--edit") == 0) {
+                editPath = nextArg(i);
+                editMode = EditMode::File;
+            } else if (_wcsicmp(arg.c_str(), L"--edit-temp") == 0) {
+                editPath = nextArg(i);
+                editMode = EditMode::Temp;
+            } else if (_wcsicmp(arg.c_str(), L"--seed-hdr") == 0) {
+                seedHdr = nextArg(i) == L"1";
+            } else if (_wcsicmp(arg.c_str(), L"--seed-sdrwhite") == 0) {
+                try { seedSdrWhite = std::stof(nextArg(i)); } catch (...) {}
+            } else if (_wcsicmp(arg.c_str(), L"--seed-maxlum") == 0) {
+                try { seedMaxLum = std::stof(nextArg(i)); } catch (...) {}
+            } else if (_wcsicmp(arg.c_str(), L"--copy") == 0) {
+                copyToClipboard = nextArg(i) == L"1";
+            } else if (editMode == EditMode::None) {
+                // Bare path fallback for the "Open with Sundial" shell verb.
                 std::error_code ec;
                 if (std::filesystem::exists(arg, ec)) {
-                    filePath = arg;
-                    fileMode = true;
+                    editPath = arg;
+                    editMode = EditMode::File;
                 }
             }
         }
         LocalFree(argv);
     }
 
-    if (fileMode) {
+    if (editMode != EditMode::None) {
         try {
             sundial::AppSettings settings = sundial::LoadSettings();
-            EditExistingFile(settings, filePath);
+            if (editMode == EditMode::Temp) {
+                EditCapturedTemp(settings, editPath, seedHdr, seedSdrWhite,
+                                 seedMaxLum, copyToClipboard);
+            } else {
+                EditExistingFile(settings, editPath);
+            }
         } catch (const std::exception& e) {
             MessageBoxA(nullptr, e.what(), "Sundial edit failed",
                         MB_ICONERROR);
@@ -394,7 +644,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     g_mainThreadId = GetCurrentThreadId();
     sundial::AppSettings settings = sundial::LoadSettings();
 
+    // Clean up any handoff temp files left behind by editor processes that
+    // crashed before deleting their own (best effort).
+    SweepStaleHandoffTemps();
+
     auto runFlow = [&] {
+        // Reload first so format / edit-on-capture / output-folder changes made
+        // in an editor process's Settings since the last capture take effect.
+        settings = sundial::LoadSettings();
         try {
             RunToolbarFlow(settings);
         } catch (const std::exception& e) {
@@ -437,18 +694,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (msg.message == WM_HOTKEY && msg.wParam == kHotkeyToolbar) {
             runFlow();
         } else if (msg.message == kMsgEditFile) {
-            // A screenshot toast was clicked: open the editor on the saved
-            // file. The path was heap-allocated by the toast callback.
+            // A screenshot toast was clicked: open the saved file in a separate
+            // editor process so the tray stays responsive. The path was
+            // heap-allocated by the toast callback.
             wchar_t* heapPath = reinterpret_cast<wchar_t*>(msg.lParam);
             if (heapPath) {
                 std::wstring path(heapPath);
                 free(heapPath);
-                try {
-                    EditExistingFile(settings, path);
-                } catch (const std::exception& e) {
-                    MessageBoxA(nullptr, e.what(), "Sundial edit failed",
-                                MB_ICONERROR);
-                }
+                SpawnEditorForFile(path);
             }
         }
         TranslateMessage(&msg);

@@ -25,4 +25,16 @@ void ShowToast(const std::wstring& title,
                uint32_t previewHeight = 0,
                int durationMs = 2800);
 
+// Same as ShowToast but runs the toast on the CALLING thread and blocks until
+// the toast is dismissed or clicked (onClick fires on this thread before the
+// return). A short-lived editor child process uses this so it stays alive long
+// enough to show - and let the user click - its save toast before exiting.
+void ShowToastBlocking(const std::wstring& title,
+                       const std::wstring& body,
+                       std::function<void()> onClick = {},
+                       std::vector<uint8_t> previewBgra = {},
+                       uint32_t previewWidth = 0,
+                       uint32_t previewHeight = 0,
+                       int durationMs = 2800);
+
 }  // namespace sundial

@@ -76,17 +76,31 @@ open the editor. Instead it
 `.jxr` when one was kept, so re-toning starts from the full HDR data). Turn on
 **Edit on Capture** if you'd rather jump straight into the editor every time.
 
-### Settings (toolbar gear menu)
+### Settings (toolbar gear menu, or **Settings…** in the editor)
 
 * **Edit on Capture** — open the editor immediately on each capture instead of
   the default toast flow. **Off by default.**
-* **Save HDR Image (JXR)** — write the original FP16 scRGB capture as a
-  `.jxr` alongside the SDR `.png`, so you can re-tone later without
-  recapturing.
+* **Image Snapshot Formats** — choose any combination of formats a snapshot
+  writes (these are for stills; video recording has its own format settings):
+  * **PNG (SDR)** — the tonemapped SDR result. **On by default.**
+  * **JPEG XR / `.jxr` (HDR)** — the original FP16 scRGB capture, so you can
+    re-tone later without recapturing. **On by default.** HDR captures only.
+  * **Ultra HDR JPEG / `.jpg` (SDR+HDR)** — a single self-contained JPEG (SDR
+    base + embedded gain map). HDR captures only; available when built with
+    libultrahdr. **Off by default.**
+
+  If only HDR formats are enabled and the capture is SDR, a PNG is written as a
+  fallback so a snapshot always produces a file.
 * **Auto Copy Capture** — copy the resulting **SDR** image to the clipboard
   after each save. **On by default.** (Published as `CF_DIBV5`, `CF_DIB`, and
   a real `PNG` blob, all with opaque alpha, so it pastes into Paint, Office,
   browsers, and Electron chat apps alike.)
+* **Output Folder** — where snapshots are saved (defaults to `Pictures\Sundial\`).
+
+Settings are shared via `%APPDATA%\Sundial\settings.ini`. Each editor runs as
+its own process, so you can keep capturing (and open multiple editors) while one
+is open; changes made in an editor's **Settings…** are picked up on the next
+capture.
 
 ### Editor
 
@@ -114,12 +128,15 @@ when **Edit on Capture** is on.
   to `%APPDATA%\Sundial\presets\`.
 * **View** — SDR only (hold the SDR button to peek at the unmapped HDR),
   Split (drag the divider), or Side-by-side.
-* **Save** (Ctrl+S), **Save As…** (Ctrl+Shift+X), **Copy** (clipboard),
+* **Save** (Ctrl+S) writes the enabled **Image Snapshot Formats**; **Save As…**
+  (Ctrl+Shift+X) writes one explicit file you name; **Copy** (clipboard),
   **Cancel** (Ctrl+X). For HDR captures, **Save As…** also offers **Ultra
   HDR JPEG (`.jpg`)** — a single file whose base image is the tonemapped SDR
   result (so it looks identical to the `.png` everywhere) but which carries an
   embedded gain map, so HDR-aware viewers (Chrome, Windows Photos, Android,
   macOS) recover the HDR from one ordinary-looking JPEG.
+* **Settings…** — opens the snapshot-format and output settings (same set as
+  the toolbar gear menu) without leaving the editor.
 
 ### Hotkeys
 
@@ -134,13 +151,17 @@ when **Edit on Capture** is on.
 
 ### Output
 
-Captures land in `Pictures\Sundial\` (which OneDrive may redirect). Each
-HDR capture produces two files with the same stem:
+Captures land in `Pictures\Sundial\` (which OneDrive may redirect). An HDR
+capture writes one file per enabled **Image Snapshot Format**, all sharing the
+same stem:
 
 * `sundial_YYYYMMDD_HHMMSS.png` — tonemapped SDR result.
-* `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB, kept when **Save
-  HDR Image (JXR)** is on so you can re-tone via **Edit Image…** without
-  recapturing.
+* `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB, so you can re-tone via
+  **Edit Image…** without recapturing.
+* `sundial_YYYYMMDD_HHMMSS.jpg` — Ultra HDR JPEG (SDR base + gain map).
+
+The toast preview re-opens the richest file written (`.jxr` if present, so
+re-toning starts from the full HDR data, otherwise the `.png`).
 
 Recordings land in the same folder as `sundial_YYYYMMDD_HHMMSS.mp4` (H.264,
 tonemapped SDR).
@@ -275,16 +296,23 @@ editor only renders the HDR one when a comparison mode actually needs it.
 
 ## Editor flow
 
-- Triggered when `AppSettings::editOnCapture == true` (toggled from the
-  Settings popup on the toolbar).
+- Each editor runs as a **separate `sundial.exe` process** (the resident
+  tray/capture process spawns it and returns immediately), so multiple editors
+  can be open and the hotkey still captures while they are. A fresh capture is
+  handed to the child losslessly via a `%TEMP%\sundial_handoff_*` file (`.jxr`
+  for HDR, `.png` for SDR), deleted when the editor exits.
+- Triggered when `AppSettings::editOnCapture == true`, by clicking a capture
+  toast, or via **Edit Image…**.
 - ImGui sidebar (~320 px) on the left, live D3D11 preview on the right.
   Preview re-renders every frame via `ShaderTonemap::Render` so slider
   changes are instant.
 - Crop is shown as a dim overlay around the selection; sliders for X/Y/W/H.
   Interactive (mouse-drag) crop isn't built yet.
 - Resize is width/height inputs with aspect lock.
-- Save → applies crop + resize to the FP16/BGRA8 source (both go to disk),
-  persists tonemap params to `settings.ini`, then writes JXR + PNG.
+- Save → applies crop + resize to the FP16/BGRA8 source, persists tonemap
+  params + settings to `settings.ini`, then writes every enabled **Image
+  Snapshot Format** (PNG / JXR / Ultra HDR JPEG). Save As writes one explicit
+  file.
 - Cancel → nothing is saved.
 
 ## Conventions / things to keep in mind

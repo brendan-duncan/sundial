@@ -10,7 +10,11 @@ struct EditorResult {
     bool saved = false;
     AppSettings updatedSettings;  // tonemap params possibly changed
     Frame editedFrame;            // crop + resize already applied
-    std::wstring outputPath;      // full path of the PNG chosen via Save As
+    std::wstring outputPath;      // full path to write
+    // True when outputPath came from Save As (one explicit file written
+    // verbatim). False for a plain Save / capture, where outputPath is a .png
+    // base that fans out into every enabled snapshot format.
+    bool explicitPath = false;
 };
 
 // Modal editor: blocks until the user clicks Save or Cancel (or closes the

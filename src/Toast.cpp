@@ -238,4 +238,22 @@ void ShowToast(const std::wstring& title,
     }
 }
 
+void ShowToastBlocking(const std::wstring& title,
+                       const std::wstring& body,
+                       std::function<void()> onClick,
+                       std::vector<uint8_t> previewBgra,
+                       uint32_t previewWidth,
+                       uint32_t previewHeight,
+                       int durationMs) {
+    auto* data = new ToastData{title,
+                               body,
+                               std::move(onClick),
+                               std::move(previewBgra),
+                               previewWidth,
+                               previewHeight,
+                               durationMs};
+    // Runs the window + message loop on this thread and deletes `data`.
+    ToastThread(data);
+}
+
 }  // namespace sundial
