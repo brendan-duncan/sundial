@@ -123,17 +123,24 @@ void SaveAndNotify(const sundial::Frame& frame,
     std::wstring selectInExplorer;
     std::wstring extraNote;
 
-    // Save As targets exactly one file. Ultra HDR (.jpg) is only meaningful for
-    // HDR sources; a .jpg from an SDR frame falls through to a plain PNG.
+    // Save As targets exactly one file. Ultra HDR (.jpg) and HDR AVIF (.avif)
+    // are only meaningful for HDR sources; from an SDR frame they fall through
+    // to a plain PNG.
     const std::wstring ext = png.extension().wstring();
     const bool explicitUltraHdr =
         frame.isHdr && (_wcsicmp(ext.c_str(), L".jpg") == 0 ||
                         _wcsicmp(ext.c_str(), L".jpeg") == 0);
+    const bool explicitAvif =
+        frame.isHdr && _wcsicmp(ext.c_str(), L".avif") == 0;
 
     if (mode == SaveMode::ExplicitFile && explicitUltraHdr) {
         sundial::SaveUltraHdrJpeg(frame, tonemap, png.wstring());
         selectInExplorer = png.wstring();
         title = L"Ultra HDR saved  -  " + png.filename().wstring();
+    } else if (mode == SaveMode::ExplicitFile && explicitAvif) {
+        sundial::SaveAvifHdr(frame, tonemap, png.wstring(), formats.avifMode);
+        selectInExplorer = png.wstring();
+        title = L"HDR AVIF saved  -  " + png.filename().wstring();
     } else if (mode == SaveMode::ExplicitFile) {
         // A single explicit PNG (SDR passthrough or tonemapped HDR).
         if (frame.isHdr) {
@@ -145,15 +152,17 @@ void SaveAndNotify(const sundial::Frame& frame,
         title = L"Saved  -  " + png.filename().wstring();
     } else {
         // Snapshot mode: write every enabled + applicable format off the base
-        // dir + stem. PNG always applies; JXR / Ultra HDR are HDR-only. Track
-        // the richest written file (jxr > png > jpg) for the toast's re-edit
-        // target and the Explorer selection.
+        // dir + stem. PNG always applies; JXR / Ultra HDR / AVIF are HDR-only.
+        // Track the richest written file (jxr > avif > png > jpg) for the
+        // toast's re-edit target and the Explorer selection.
         std::filesystem::path base = png;
         const std::filesystem::path pngFile = base.replace_extension(L".png");
         std::filesystem::path jxrFile = pngFile;
         jxrFile.replace_extension(L".jxr");
         std::filesystem::path jpgFile = pngFile;
         jpgFile.replace_extension(L".jpg");
+        std::filesystem::path avifFile = pngFile;
+        avifFile.replace_extension(L".avif");
 
         std::vector<std::wstring> wrote;  // extensions written, for the title
         bool wrotePng = false;
@@ -174,6 +183,14 @@ void SaveAndNotify(const sundial::Frame& frame,
             wrote.push_back(L".jxr");
             selectInExplorer = jxrFile.wstring();  // richest: prefer JXR
         }
+#ifdef SUNDIAL_HAS_AVIF
+        if (formats.avif && frame.isHdr) {
+            sundial::SaveAvifHdr(frame, tonemap, avifFile.wstring(),
+                                 formats.avifMode);
+            wrote.push_back(L".avif");
+            if (selectInExplorer.empty()) selectInExplorer = avifFile.wstring();
+        }
+#endif
 #ifdef SUNDIAL_HAS_ULTRAHDR
         if (formats.ultraHdrJpeg && frame.isHdr) {
             sundial::SaveUltraHdrJpeg(frame, tonemap, jpgFile.wstring());
@@ -416,8 +433,10 @@ std::wstring PickImageToOpen(HWND owner) {
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
     ofn.lpstrFilter =
-        L"Images (*.jxr;*.png;*.jpg;*.jpeg)\0*.jxr;*.png;*.jpg;*.jpeg\0"
+        L"Images (*.jxr;*.avif;*.png;*.jpg;*.jpeg)\0"
+        L"*.jxr;*.avif;*.png;*.jpg;*.jpeg\0"
         L"JPEG XR (*.jxr)\0*.jxr\0"
+        L"HDR AVIF (*.avif)\0*.avif\0"
         L"PNG (*.png)\0*.png\0"
         L"All files (*.*)\0*.*\0\0";
     ofn.lpstrFile = fileName;
@@ -620,8 +639,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
-    // Register / refresh the "Open with Sundial" right-click verb for .jxr.
-    sundial::RegisterJxrAssociation(GetExePath());
+    // Register / refresh the "Open with Sundial" right-click verbs (.jxr, .avif).
+    sundial::RegisterImageAssociations(GetExePath());
 
     // If Velopack installed a run-on-startup shortcut, make sure it carries
     // --startup so login launches stay in the tray (vpk creates it argless).

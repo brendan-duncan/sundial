@@ -36,9 +36,11 @@ toolbar appears at the top of the primary monitor.
 * **Full Screen** — capture the entire primary monitor.
 * **Area** — drag a rectangle on the darkened screen to capture just that
   region. **Esc** or right-click cancels.
-* **Edit Image…** — re-open an existing `.jxr` (or `.png`/`.jpg`) and
-  re-tone it through the same editor. You can also right-click any `.jxr`
-  in Explorer and pick **Open with Sundial**.
+* **Edit Image…** — re-open an existing `.jxr` (or `.avif`/`.png`/`.jpg`) and
+  re-tone it through the same editor. HDR formats (`.jxr`, and `.avif` /
+  Ultra HDR `.jpg`) re-open as HDR so re-toning starts from the recovered HDR.
+  You can also right-click any `.jxr` or `.avif` in Explorer and pick
+  **Open with Sundial**.
 
 ### Recording
 
@@ -88,6 +90,14 @@ open the editor. Instead it
   * **Ultra HDR JPEG / `.jpg` (SDR+HDR)** — a single self-contained JPEG (SDR
     base + embedded gain map). HDR captures only; available when built with
     libultrahdr. **Off by default.**
+  * **HDR AVIF / `.avif` (HDR)** — HDR captures only; available when built with
+    libavif. **Off by default.** Two encodings, selected by the **AVIF mode**
+    radio items below it:
+    * **PQ (10-bit HDR)** — a native 10-bit Rec.2020 PQ image, the widely
+      recognised form of HDR AVIF (Chrome, Windows Photos, macOS). *(default)*
+    * **Gain map (SDR+HDR)** — an SDR base plus an embedded ISO 21496-1 gain
+      map, so SDR viewers see the tonemapped base and HDR-aware viewers recover
+      the HDR — the same idea as Ultra HDR JPEG.
 
   If only HDR formats are enabled and the capture is SDR, a PNG is written as a
   fallback so a snapshot always produces a file.
@@ -134,7 +144,9 @@ when **Edit on Capture** is on.
   HDR JPEG (`.jpg`)** — a single file whose base image is the tonemapped SDR
   result (so it looks identical to the `.png` everywhere) but which carries an
   embedded gain map, so HDR-aware viewers (Chrome, Windows Photos, Android,
-  macOS) recover the HDR from one ordinary-looking JPEG.
+  macOS) recover the HDR from one ordinary-looking JPEG — and **HDR AVIF
+  (`.avif`)**, written in whichever **AVIF mode** (PQ or gain map) is selected
+  in Settings.
 * **Settings…** — opens the snapshot-format and output settings (same set as
   the toolbar gear menu) without leaving the editor.
 
@@ -159,6 +171,7 @@ same stem:
 * `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB, so you can re-tone via
   **Edit Image…** without recapturing.
 * `sundial_YYYYMMDD_HHMMSS.jpg` — Ultra HDR JPEG (SDR base + gain map).
+* `sundial_YYYYMMDD_HHMMSS.avif` — HDR AVIF (10-bit PQ, or SDR base + gain map).
 
 The toast preview re-opens the richest file written (`.jxr` if present, so
 re-toning starts from the full HDR data, otherwise the `.png`).
@@ -177,13 +190,18 @@ Clicking a **screenshot** toast opens that file in the editor; clicking a
 .\build\Release\sundial.exe
 ```
 
-ImGui and [libultrahdr](https://github.com/google/libultrahdr) (for Ultra HDR
-JPEG export) are fetched on first configure via `FetchContent` — needs internet
-for the initial configure. libultrahdr builds its own libjpeg-turbo from source
-(SIMD disabled, so no NASM needed). `build.bat` sets
-`CMAKE_POLICY_VERSION_MINIMUM=3.5` so that bundled libjpeg-turbo (which targets
-an older CMake) configures under CMake 4.x. Build without Ultra HDR support via
-`-DSUNDIAL_ENABLE_ULTRAHDR=OFF`.
+ImGui, [libultrahdr](https://github.com/google/libultrahdr) (Ultra HDR JPEG),
+and [libavif](https://github.com/AOMediaCodec/libavif) (HDR AVIF) are fetched on
+first configure via `FetchContent` — needs internet for the initial configure.
+libultrahdr builds its own libjpeg-turbo from source, and libavif builds its own
+libaom (via `AVIF_CODEC_AOM=LOCAL`); both have SIMD disabled (`AOM_TARGET_CPU=
+generic`) so **no NASM is needed**. `build.bat` sets
+`CMAKE_POLICY_VERSION_MINIMUM=3.5` so those older-CMake bundled deps
+(libjpeg-turbo, libaom) configure under CMake 4.x. libaom's CMake requires Perl;
+the build auto-detects the copy bundled with Git for Windows, so no separate
+Perl install is needed. The first AVIF build also compiles libaom, so expect a
+noticeably longer initial configure/build. Build without these via
+`-DSUNDIAL_ENABLE_ULTRAHDR=OFF` / `-DSUNDIAL_ENABLE_AVIF=OFF`.
 
 If the build directory is stale (older generator cached), delete it:
 
@@ -215,7 +233,7 @@ Remove-Item -Recurse -Force build
 | `ShaderTonemap.{h,cpp}` | D3D11 pixel-shader version of the same tonemap for live editor preview and video recording. Must stay in sync with `Tonemap.cpp`. `SetSourceTexture()` feeds it a GPU texture directly (no CPU upload) for the recorder |
 | `VideoRecorder.{h,cpp}` | Screen recording. Worker-thread DXGI duplication loop → GPU crop → `ShaderTonemap` HDR→SDR → Media Foundation `IMFSinkWriter` (H.264/MP4). Own D3D11 device, isolated from the main thread |
 | `ImageOps.{h,cpp}` | CPU crop + bilinear resize for both FP16 and BGRA8 frames |
-| `Encoder.{h,cpp}` | WIC writers — JXR (`GUID_ContainerFormatWmp` + `64bppRGBAHalf`), PNG (`32bppBGRA`). Also `SaveUltraHdrJpeg` — Ultra HDR JPEG (SDR base + embedded gain map) via libultrahdr, fed the tonemapped SDR plus the linear scRGB source scaled so SDR white = 1.0 |
+| `Encoder.{h,cpp}` | WIC writers — JXR (`GUID_ContainerFormatWmp` + `64bppRGBAHalf`), PNG (`32bppBGRA`). Also `SaveUltraHdrJpeg` — Ultra HDR JPEG (SDR base + embedded gain map) via libultrahdr; and `SaveAvifHdr` — HDR AVIF via libavif, either native 10-bit Rec.2020 PQ or an SDR base + ISO 21496-1 gain map. `LoadFrameFromFile` re-opens Ultra HDR JPEG (libultrahdr) and AVIF (libavif: PQ/HLG/gain-map/SDR) as HDR; everything else via WIC |
 | `Toast.{h,cpp}` | Bottom-right layered notification window with an optional preview thumbnail. Takes an `onClick` callback (screenshots open the editor, recordings open Explorer). Runs on its own thread |
 | `Toolbar.{h,cpp}` | Top-centre floating toolbar — Full Screen / Record / Edit Image / Settings (Area is drag-on-overlay). Also drives the full video flow: persistent selection with handles, control bar, countdown, recording. Settings is a `TrackPopupMenu` (no dialog) |
 | `AreaSelector.{h,cpp}` | Full-screen layered overlay; drag rectangle, ESC/right-click cancels |
@@ -311,8 +329,8 @@ editor only renders the HDR one when a comparison mode actually needs it.
 - Resize is width/height inputs with aspect lock.
 - Save → applies crop + resize to the FP16/BGRA8 source, persists tonemap
   params + settings to `settings.ini`, then writes every enabled **Image
-  Snapshot Format** (PNG / JXR / Ultra HDR JPEG). Save As writes one explicit
-  file.
+  Snapshot Format** (PNG / JXR / Ultra HDR JPEG / HDR AVIF). Save As writes one
+  explicit file.
 - Cancel → nothing is saved.
 
 ## Conventions / things to keep in mind

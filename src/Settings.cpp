@@ -209,6 +209,12 @@ AppSettings LoadSettings() {
             sawSnapshotJxr = true;
         } else if (key == "snapshot_ultrahdr_jpeg") {
             s.snapshot.ultraHdrJpeg = asBool(value);
+        } else if (key == "snapshot_avif") {
+            s.snapshot.avif = asBool(value);
+        } else if (key == "snapshot_avif_mode") {
+            s.snapshot.avifMode = (value == "gainmap")
+                                      ? AvifHdrMode::GainMap
+                                      : AvifHdrMode::Pq;
         } else if (key == "save_hdr_jxr") {
             legacyJxr = asBool(value);
         } else if (key == "auto_copy_capture") {
@@ -232,6 +238,10 @@ void SaveSettings(const AppSettings& s) {
     f << "snapshot_jxr = " << (s.snapshot.jxr ? "true" : "false") << "\n";
     f << "snapshot_ultrahdr_jpeg = "
       << (s.snapshot.ultraHdrJpeg ? "true" : "false") << "\n";
+    f << "snapshot_avif = " << (s.snapshot.avif ? "true" : "false") << "\n";
+    f << "snapshot_avif_mode = "
+      << (s.snapshot.avifMode == AvifHdrMode::GainMap ? "gainmap" : "pq")
+      << "\n";
     f << "auto_copy_capture = " << (s.autoCopyCapture ? "true" : "false")
       << "\n";
     f << "output_folder = " << WideToUtf8(s.outputFolder) << "\n";

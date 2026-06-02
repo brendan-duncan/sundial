@@ -80,21 +80,33 @@ struct TonemapParams {
     float sourcePeakNits = 1000.0f;
 };
 
+// How HDR is represented inside an exported AVIF. Pq encodes the HDR signal
+// natively as 10-bit Rec.2020 PQ (the common, widely-recognised form of "HDR
+// AVIF"); GainMap writes an SDR base image plus an embedded gain map (ISO
+// 21496-1), so SDR viewers see the tonemapped base and HDR-aware viewers
+// recover the HDR - the same idea as Ultra HDR JPEG.
+enum class AvifHdrMode : int {
+    Pq = 0,
+    GainMap = 1,
+};
+
 // Image-snapshot output formats. A snapshot writes every enabled format that
-// applies to the captured frame (PNG always applies; JXR and Ultra HDR JPEG are
-// HDR-only). The default PNG + JXR preserves the prior save_hdr_jxr=true
-// behavior. Video recording has its own format settings (future) - these are
-// for still snapshots only.
+// applies to the captured frame (PNG always applies; JXR, Ultra HDR JPEG and
+// AVIF are HDR-only). The default PNG + JXR preserves the prior
+// save_hdr_jxr=true behavior. Video recording has its own format settings
+// (future) - these are for still snapshots only.
 struct SnapshotFormats {
     bool png = true;            // PNG (SDR tonemapped, or SDR passthrough)
     bool jxr = true;            // JPEG XR / .jxr (HDR only)
     bool ultraHdrJpeg = false;  // Ultra HDR JPEG / .jpg (SDR+HDR, HDR only)
+    bool avif = false;          // HDR AVIF / .avif (HDR only)
+    AvifHdrMode avifMode = AvifHdrMode::Pq;  // how avif encodes HDR
 };
 
 // True if at least one enabled format would produce a file for a frame with the
 // given HDR-ness. PNG always qualifies; the HDR formats only when isHdr.
 inline bool AnySnapshotFormatApplies(const SnapshotFormats& f, bool isHdr) {
-    return f.png || (isHdr && (f.jxr || f.ultraHdrJpeg));
+    return f.png || (isHdr && (f.jxr || f.ultraHdrJpeg || f.avif));
 }
 
 struct AppSettings {

@@ -412,11 +412,12 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    // Filter index 2 (when present) is Ultra HDR JPEG - an SDR JPEG with an
-    // embedded gain map, only meaningful for HDR sources.
+    // For HDR sources, filter index 2 is Ultra HDR JPEG (an SDR JPEG with an
+    // embedded gain map) and index 3 is HDR AVIF; both are HDR-only.
     ofn.lpstrFilter =
         allowUltraHdr
-            ? L"PNG image (*.png)\0*.png\0Ultra HDR JPEG (*.jpg)\0*.jpg\0\0"
+            ? L"PNG image (*.png)\0*.png\0Ultra HDR JPEG (*.jpg)\0*.jpg\0"
+              L"HDR AVIF (*.avif)\0*.avif\0\0"
             : L"PNG image (*.png)\0*.png\0\0";
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = MAX_PATH;
@@ -436,6 +437,11 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
         if (_wcsicmp(ext.c_str(), L".jpg") != 0 &&
             _wcsicmp(ext.c_str(), L".jpeg") != 0) {
             chosen.replace_extension(L".jpg");
+        }
+    } else if (allowUltraHdr && ofn.nFilterIndex == 3) {
+        std::wstring ext = chosen.extension().wstring();
+        if (_wcsicmp(ext.c_str(), L".avif") != 0) {
+            chosen.replace_extension(L".avif");
         }
     }
     return chosen.wstring();
@@ -751,6 +757,31 @@ void DrawSettingsPopup(EditorContext& ctx) {
     ImGui::BeginDisabled();
     bool noUltra = false;
     ImGui::Checkbox("Ultra HDR JPEG / .jpg (not built)", &noUltra);
+    ImGui::EndDisabled();
+#endif
+#ifdef SUNDIAL_HAS_AVIF
+    changed |= ImGui::Checkbox("HDR AVIF / .avif (HDR)", &ctx.snapshot.avif);
+    // The two encodings are mutually exclusive; show as a radio pair, greyed
+    // until AVIF is enabled.
+    if (!ctx.snapshot.avif) ImGui::BeginDisabled();
+    int avifMode = static_cast<int>(ctx.snapshot.avifMode);
+    ImGui::Indent();
+    bool modeChanged = false;
+    modeChanged |= ImGui::RadioButton("PQ (10-bit HDR)##avifmode", &avifMode,
+                                      static_cast<int>(AvifHdrMode::Pq));
+    ImGui::SameLine();
+    modeChanged |= ImGui::RadioButton("Gain map (SDR+HDR)##avifmode", &avifMode,
+                                      static_cast<int>(AvifHdrMode::GainMap));
+    ImGui::Unindent();
+    if (modeChanged) {
+        ctx.snapshot.avifMode = static_cast<AvifHdrMode>(avifMode);
+        changed = true;
+    }
+    if (!ctx.snapshot.avif) ImGui::EndDisabled();
+#else
+    ImGui::BeginDisabled();
+    bool noAvif = false;
+    ImGui::Checkbox("HDR AVIF / .avif (not built)", &noAvif);
     ImGui::EndDisabled();
 #endif
     if (ctx.source && !ctx.source->isHdr) {
@@ -1404,6 +1435,11 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     io.IniFilename = nullptr;  // don't litter %CWD% with imgui.ini
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
+    // StyleColorsDark dims modal backdrops with a light gray (0.8,0.8,0.8,0.35),
+    // which reads as "transparent white" over the editor. Use transparent black
+    // so the settings dialog dims toward black instead.
+    ImGui::GetStyle().Colors[ImGuiCol_ModalWindowDimBg] =
+        ImVec4(0.0f, 0.0f, 0.0f, 0.35f);
 
     ImGui_ImplWin32_Init(ctx.hwnd);
     ImGui_ImplDX11_Init(ctx.device.Get(), ctx.context.Get());

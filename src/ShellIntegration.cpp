@@ -23,19 +23,28 @@ bool WriteString(const std::wstring& subkey, const wchar_t* valueName,
     return s == ERROR_SUCCESS;
 }
 
-}  // namespace
-
-void RegisterJxrAssociation(const std::wstring& exePath) {
+// Add an "Open with Sundial" right-click verb for a single extension (".jxr",
+// ".avif", ...) under the per-user SystemFileAssociations hive.
+void RegisterOpenVerb(const std::wstring& exePath, const std::wstring& ext) {
     const std::wstring quoted = L"\"" + exePath + L"\"";
     const std::wstring command = quoted + L" \"%1\"";
     const std::wstring icon = quoted + L",0";
 
     const std::wstring verbKey =
-        L"Software\\Classes\\SystemFileAssociations\\.jxr\\shell"
-        L"\\OpenWithSundial";
+        L"Software\\Classes\\SystemFileAssociations\\" + ext +
+        L"\\shell\\OpenWithSundial";
     WriteString(verbKey, nullptr, L"Open with Sundial");
     WriteString(verbKey, L"Icon", icon);
     WriteString(verbKey + L"\\command", nullptr, command);
+}
+
+}  // namespace
+
+void RegisterImageAssociations(const std::wstring& exePath) {
+    // Image formats Sundial can re-open as HDR from Explorer. AVIF goes through
+    // libavif (PQ / HLG / gain-map / SDR); JXR through WIC.
+    RegisterOpenVerb(exePath, L".jxr");
+    RegisterOpenVerb(exePath, L".avif");
 }
 
 std::wstring PickFolderDialog(void* owner, const std::wstring& seedFolder) {

@@ -1,3 +1,17 @@
+# 1.2.0
+
+* **HDR AVIF** import and export via [libavif](https://github.com/AOMediaCodec/libavif).
+  A new **HDR AVIF / `.avif`** Image Snapshot Format (and **Save As…** option)
+  writes HDR captures as AVIF in one of two modes, selectable in Settings:
+  * **PQ (10-bit HDR)** — a native 10-bit Rec.2020 PQ image (the widely
+    recognised form of HDR AVIF).
+  * **Gain map (SDR+HDR)** — an SDR base plus an embedded ISO 21496-1 gain map,
+    so SDR viewers see the tonemapped base and HDR-aware viewers recover the HDR.
+* `.avif` files (PQ, HLG, gain-map, or plain SDR) re-open as HDR in the editor,
+  and a right-click **Open with Sundial** verb is registered for `.avif`.
+* libavif builds its own libaom from source with SIMD disabled, so the build
+  still needs no NASM. Build without it via `-DSUNDIAL_ENABLE_AVIF=OFF`.
+
 # 1.1.0
 
 * **Image Snapshot Formats** setting — pick any combination of output formats a

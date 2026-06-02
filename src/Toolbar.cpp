@@ -50,6 +50,9 @@ constexpr int kIdMenuCheckUpdates = 2006;
 constexpr int kIdMenuAbout = 2007;
 constexpr int kIdMenuFmtJxr = 2008;
 constexpr int kIdMenuFmtUltraHdr = 2009;
+constexpr int kIdMenuFmtAvif = 2010;
+constexpr int kIdMenuFmtAvifModePq = 2011;
+constexpr int kIdMenuFmtAvifModeGainMap = 2012;
 
 // Video-mode control bar geometry (the window is reused as a floating bar).
 // The right region holds either the elapsed-time readout (while recording) or
@@ -774,6 +777,27 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
         AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdMenuFmtUltraHdr,
                     L"Ultra HDR JPEG / .jpg (not built)");
 #endif
+#ifdef SUNDIAL_HAS_AVIF
+        AppendMenuW(menu, MF_STRING | (fmt.avif ? MF_CHECKED : MF_UNCHECKED),
+                    kIdMenuFmtAvif, L"HDR AVIF / .avif (HDR)");
+        // The two encodings are mutually exclusive; show them as a radio pair,
+        // greyed until AVIF is enabled.
+        const UINT avifModeFlags = fmt.avif ? MF_STRING : (MF_STRING | MF_GRAYED);
+        AppendMenuW(menu,
+                    avifModeFlags | (fmt.avifMode == AvifHdrMode::Pq
+                                         ? MF_CHECKED
+                                         : MF_UNCHECKED),
+                    kIdMenuFmtAvifModePq, L"     AVIF mode: PQ (10-bit HDR)");
+        AppendMenuW(menu,
+                    avifModeFlags | (fmt.avifMode == AvifHdrMode::GainMap
+                                         ? MF_CHECKED
+                                         : MF_UNCHECKED),
+                    kIdMenuFmtAvifModeGainMap,
+                    L"     AVIF mode: Gain map (SDR+HDR)");
+#else
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdMenuFmtAvif,
+                    L"HDR AVIF / .avif (not built)");
+#endif
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
         AppendMenuW(menu,
@@ -816,6 +840,12 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
         } else if (cmd == kIdMenuFmtUltraHdr) {
             s->settings->snapshot.ultraHdrJpeg =
                 !s->settings->snapshot.ultraHdrJpeg;
+        } else if (cmd == kIdMenuFmtAvif) {
+            s->settings->snapshot.avif = !s->settings->snapshot.avif;
+        } else if (cmd == kIdMenuFmtAvifModePq) {
+            s->settings->snapshot.avifMode = AvifHdrMode::Pq;
+        } else if (cmd == kIdMenuFmtAvifModeGainMap) {
+            s->settings->snapshot.avifMode = AvifHdrMode::GainMap;
         } else if (cmd == kIdMenuAutoCopyCapture) {
             s->settings->autoCopyCapture = !s->settings->autoCopyCapture;
         } else {

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sundial VERSION 1.1.1 LANGUAGES CXX)
+project(sundial VERSION 1.3.0 LANGUAGES CXX)
 
 # App version shown in the About box. Defaults to the project() version; CI and
 # tools/release.ps1 override it with the release tag (-DSUNDIAL_VERSION=x.y.z).
@@ -72,6 +72,80 @@ if(SUNDIAL_ENABLE_ULTRAHDR)
   FetchContent_MakeAvailable(libultrahdr)
 endif()
 
+# --- HDR AVIF import/export (libavif) ---------------------------------------
+# Fetched and built from source. libavif's AVIF_CODEC_AOM=LOCAL pulls and
+# builds libaom (v3.12.0) for both encode and decode, so no system codec is
+# needed. We disable aom's assembly (AOM_TARGET_CPU=generic / ENABLE_NASM=OFF)
+# so the build needs no NASM - the same SIMD-free trade-off libultrahdr makes
+# above; aom is only ever encoding/decoding single still screenshots, so the
+# slower scalar path is fine. Turn off to build without AVIF - SaveAvifHdr()
+# then throws and .avif files fall back to the WIC decode path (which, absent
+# the OS AV1 Image Extension, simply fails to open them).
+option(SUNDIAL_ENABLE_AVIF "Enable HDR AVIF import/export via libavif" ON)
+if(SUNDIAL_ENABLE_AVIF)
+  # aom (built by libavif's LOCAL mechanism): no assembly, no test/example/doc
+  # baggage. These are read by aom's CMake when libavif FetchContent's it.
+  set(AOM_TARGET_CPU "generic" CACHE STRING "" FORCE)  # disables all aom SIMD
+  set(ENABLE_NASM OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TOOLS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_DOCS OFF CACHE BOOL "" FORCE)
+
+  # libavif itself: build aom locally for codec duties, skip the CLI apps /
+  # tests / examples, and don't require system libyuv (libavif has a built-in
+  # fallback for the colour conversions we use). Gain-map encode/decode is part
+  # of the stable API as of libavif 1.2.0, so no extra flag is required.
+  set(AVIF_CODEC_AOM "LOCAL" CACHE STRING "" FORCE)
+  set(AVIF_LIBYUV "OFF" CACHE STRING "" FORCE)
+  set(AVIF_LIBSHARPYUV "OFF" CACHE STRING "" FORCE)
+  # Gain-map encode/decode is in the stable API as of 1.2.0; this flag is a
+  # no-op there but harmless, and guards us if the implementation is ever gated.
+  set(AVIF_ENABLE_EXPERIMENTAL_GAIN_MAP ON CACHE BOOL "" FORCE)
+  set(AVIF_BUILD_APPS OFF CACHE BOOL "" FORCE)
+  set(AVIF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(AVIF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(AVIF_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+  # libaom's CMake hard-requires Perl (even with assembly disabled). Rather than
+  # make Perl a separate install prerequisite, fall back to the copy Git for
+  # Windows already ships (we depend on git anyway). CI runners have Perl on
+  # PATH, so this only kicks in on dev machines without a standalone Perl.
+  find_package(Perl QUIET)
+  if(NOT PERL_FOUND)
+    find_program(GIT_EXECUTABLE git)
+    if(GIT_EXECUTABLE)
+      get_filename_component(_git_bin "${GIT_EXECUTABLE}" DIRECTORY)   # ...\cmd
+      get_filename_component(_git_root "${_git_bin}" DIRECTORY)         # ...\Git
+      find_program(PERL_EXECUTABLE perl
+        HINTS "${_git_root}/usr/bin" "${_git_root}/mingw64/bin")
+    endif()
+    if(NOT PERL_EXECUTABLE)
+      find_program(PERL_EXECUTABLE perl
+        HINTS "C:/Program Files/Git/usr/bin"
+              "C:/Program Files (x86)/Git/usr/bin"
+              "$ENV{LOCALAPPDATA}/Programs/Git/usr/bin")
+    endif()
+    if(PERL_EXECUTABLE)
+      message(STATUS "Sundial: using Git-bundled Perl for libaom: "
+                     "${PERL_EXECUTABLE}")
+      set(PERL_EXECUTABLE "${PERL_EXECUTABLE}" CACHE FILEPATH "" FORCE)
+    else()
+      message(WARNING
+        "Sundial: Perl not found - libaom (HDR AVIF) configure will fail. "
+        "Install Strawberry Perl, or build with -DSUNDIAL_ENABLE_AVIF=OFF.")
+    endif()
+  endif()
+
+  # Static lib so there's no DLL to ship beside the exe (scoped to the fetched
+  # subproject by the plain BUILD_SHARED_LIBS variable above).
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_Declare(libavif
+    GIT_REPOSITORY https://github.com/AOMediaCodec/libavif.git
+    GIT_TAG        v1.2.0
+  )
+  FetchContent_MakeAvailable(libavif)
+endif()
+
 add_executable(sundial WIN32
   src/main.cpp
   src/HdrCapture.cpp
@@ -117,6 +191,10 @@ target_link_libraries(sundial PRIVATE
 target_compile_definitions(sundial PRIVATE
   UNICODE _UNICODE
   WIN32_LEAN_AND_MEAN NOMINMAX
+  # Target Windows 10: needed for SetProcessDpiAwarenessContext and the newer
+  # WIC pixel-format GUIDs (64bppPRGBAHalf, 96bppRGBFloat, ...). Pin it
+  # explicitly so the fetched libaom subproject can't lower it globally.
+  _WIN32_WINNT=0x0A00 WINVER=0x0A00
   SUNDIAL_VERSION="${SUNDIAL_VERSION}"
 )
 
@@ -129,6 +207,13 @@ if(SUNDIAL_ENABLE_ULTRAHDR AND TARGET uhdr)
   target_link_libraries(sundial PRIVATE uhdr)
   target_include_directories(sundial PRIVATE "${libultrahdr_SOURCE_DIR}")
   target_compile_definitions(sundial PRIVATE SUNDIAL_HAS_ULTRAHDR=1)
+endif()
+
+if(SUNDIAL_ENABLE_AVIF AND TARGET avif)
+  message(STATUS "Sundial: HDR AVIF import/export enabled (libavif + aom)")
+  target_link_libraries(sundial PRIVATE avif)
+  target_include_directories(sundial PRIVATE "${libavif_SOURCE_DIR}/include")
+  target_compile_definitions(sundial PRIVATE SUNDIAL_HAS_AVIF=1)
 endif()
 
 # --- Auto-update support (Velopack) -----------------------------------------

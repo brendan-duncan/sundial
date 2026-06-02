@@ -35,6 +35,22 @@ void SaveUltraHdrJpeg(const Frame& frame,
                       const TonemapParams& params,
                       const std::wstring& path);
 
+// Write an HDR frame as an AVIF (.avif). `mode` selects how the HDR is stored:
+//   - AvifHdrMode::Pq: a single 10-bit Rec.2020 PQ image (native HDR AVIF).
+//     The image is the linear scRGB source with the editor's exposure / white
+//     balance applied (the same multiplicative adjustments SaveUltraHdrJpeg's
+//     HDR rendition uses), tone curve NOT applied - so it carries the full HDR
+//     like the JXR, just in AVIF.
+//   - AvifHdrMode::GainMap: an SDR base image (the tonemapped result, identical
+//     to SavePngTonemapped) plus an embedded ISO 21496-1 gain map, so SDR
+//     viewers see the tonemapped image and HDR-aware viewers recover the HDR.
+// Requires `frame.isHdr`. Throws on failure, or if the build was configured
+// without libavif (SUNDIAL_HAS_AVIF).
+void SaveAvifHdr(const Frame& frame,
+                 const TonemapParams& params,
+                 const std::wstring& path,
+                 AvifHdrMode mode);
+
 // Write an already-SDR frame straight to PNG (no tonemap).
 void SavePngSdr(const Frame& frame, const std::wstring& path);
 
