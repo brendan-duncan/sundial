@@ -1,4 +1,24 @@
-# 1.2.0
+# 1.4.0
+
+* **Settings dialog** — the capture toolbar's **Settings** button now opens a
+  proper dialog (the same controls as the editor's Settings) instead of a
+  pop-up menu, and the dialog is also reachable from the **tray icon's
+  right-click menu**. Changes are saved immediately. It covers snapshot
+  formats, Edit on Capture, Auto Copy Capture, output folder, and the capture
+  hotkey.
+* **Configurable capture hotkey** — the global shortcut that opens the toolbar
+  (default **Win+Shift+X**) can now be changed in the editor's **Settings**:
+  pick any combination of Win/Ctrl/Alt/Shift plus a key. Changes take effect
+  immediately on the running app, no restart needed.
+* **Crop and Resize are now editor modes** — instead of controls in the side
+  panel, Crop and Resize open as dedicated full-window editors from the preview
+  toolbar, each with its own canvas and Apply/Cancel.
+* **Crop drag handles** — the crop editor draws eight resize handles (four
+  corners and four edges) on the crop rectangle. Drag a handle to resize the
+  crop, drag inside the rectangle to move it, or drag on empty canvas to draw a
+  fresh crop region.
+
+# 1.3.0
 
 * **HDR AVIF** import and export via [libavif](https://github.com/AOMediaCodec/libavif).
   A new **HDR AVIF / `.avif`** Image Snapshot Format (and **Save As…** option)

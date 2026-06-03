@@ -14,6 +14,7 @@
 #include "HdrCapture.h"
 #include "ImageOps.h"
 #include "Resource.h"
+#include "SettingsDialog.h"
 #include "ShellIntegration.h"
 #include "Updater.h"
 #include "Version.h"
@@ -41,18 +42,6 @@ constexpr int kIdFullScreen = 1001;
 constexpr int kIdRecord = 1002;
 constexpr int kIdEditImage = 1003;
 constexpr int kIdSettings = 1004;
-constexpr int kIdMenuEditOnCapture = 2001;
-constexpr int kIdMenuFmtPng = 2002;
-constexpr int kIdMenuAutoCopyCapture = 2003;
-constexpr int kIdMenuOutputFolder = 2004;
-constexpr int kIdMenuOutputFolderReset = 2005;
-constexpr int kIdMenuCheckUpdates = 2006;
-constexpr int kIdMenuAbout = 2007;
-constexpr int kIdMenuFmtJxr = 2008;
-constexpr int kIdMenuFmtUltraHdr = 2009;
-constexpr int kIdMenuFmtAvif = 2010;
-constexpr int kIdMenuFmtAvifModePq = 2011;
-constexpr int kIdMenuFmtAvifModeGainMap = 2012;
 
 // Video-mode control bar geometry (the window is reused as a floating bar).
 // The right region holds either the elapsed-time readout (while recording) or
@@ -786,149 +775,6 @@ void ShowControlBarForSelection(HWND bar, ToolbarState* s) {
     SetFocus(bar);
 }
 
-// ---- folder picker + settings menu (unchanged) ---------------------------
-
-std::wstring PickFolder(HWND owner, const std::wstring& seedFolder) {
-    return PickFolderDialog(owner, seedFolder);
-}
-
-void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
-    // Re-show the menu after a checkbox toggle so several formats (or other
-    // toggles) can be changed in one go; action items and dismissal exit.
-    for (;;) {
-        HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu,
-                    MF_STRING | (s->settings->editOnCapture ? MF_CHECKED
-                                                            : MF_UNCHECKED),
-                    kIdMenuEditOnCapture, L"Edit on Capture");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-        // Image-snapshot output formats (video recording has its own, future).
-        const SnapshotFormats& fmt = s->settings->snapshot;
-        AppendMenuW(menu, MF_STRING | MF_DISABLED, 0,
-                    L"Image Snapshot Formats:");
-        AppendMenuW(menu, MF_STRING | (fmt.png ? MF_CHECKED : MF_UNCHECKED),
-                    kIdMenuFmtPng, L"PNG (SDR)");
-        AppendMenuW(menu, MF_STRING | (fmt.jxr ? MF_CHECKED : MF_UNCHECKED),
-                    kIdMenuFmtJxr, L"JPEG XR / .jxr (HDR)");
-#ifdef SUNDIAL_HAS_ULTRAHDR
-        AppendMenuW(menu,
-                    MF_STRING | (fmt.ultraHdrJpeg ? MF_CHECKED : MF_UNCHECKED),
-                    kIdMenuFmtUltraHdr, L"Ultra HDR JPEG / .jpg (SDR+HDR)");
-#else
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdMenuFmtUltraHdr,
-                    L"Ultra HDR JPEG / .jpg (not built)");
-#endif
-#ifdef SUNDIAL_HAS_AVIF
-        AppendMenuW(menu, MF_STRING | (fmt.avif ? MF_CHECKED : MF_UNCHECKED),
-                    kIdMenuFmtAvif, L"HDR AVIF / .avif (HDR)");
-        // The two encodings are mutually exclusive; show them as a radio pair,
-        // grayed until AVIF is enabled.
-        const UINT avifModeFlags = fmt.avif ? MF_STRING : (MF_STRING | MF_GRAYED);
-        AppendMenuW(menu,
-                    avifModeFlags | (fmt.avifMode == AvifHdrMode::Pq
-                                         ? MF_CHECKED
-                                         : MF_UNCHECKED),
-                    kIdMenuFmtAvifModePq, L"     AVIF mode: PQ (10-bit HDR)");
-        AppendMenuW(menu,
-                    avifModeFlags | (fmt.avifMode == AvifHdrMode::GainMap
-                                         ? MF_CHECKED
-                                         : MF_UNCHECKED),
-                    kIdMenuFmtAvifModeGainMap,
-                    L"     AVIF mode: Gain map (SDR+HDR)");
-#else
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdMenuFmtAvif,
-                    L"HDR AVIF / .avif (not built)");
-#endif
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-        AppendMenuW(menu,
-                    MF_STRING | (s->settings->autoCopyCapture ? MF_CHECKED
-                                                              : MF_UNCHECKED),
-                    kIdMenuAutoCopyCapture, L"Auto Copy Capture");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kIdMenuOutputFolder, L"Output Folder...");
-        AppendMenuW(menu,
-                    MF_STRING |
-                        (s->settings->outputFolder.empty() ? MF_GRAYED : 0),
-                    kIdMenuOutputFolderReset,
-                    L"Reset Output Folder to Default");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-#ifdef SUNDIAL_HAS_UPDATER
-        AppendMenuW(menu, MF_STRING, kIdMenuCheckUpdates,
-                    L"Check for Updates...");
-#endif
-        AppendMenuW(menu, MF_STRING, kIdMenuAbout, L"About Sundial...");
-
-        RECT btn = GetButtonRect(kIdSettings);
-        POINT pt{btn.left, btn.bottom};
-        ClientToScreen(hwnd, &pt);
-
-        SetForegroundWindow(hwnd);
-        UINT cmd = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN |
-                                            TPM_RETURNCMD | TPM_NONOTIFY,
-                                  pt.x, pt.y, 0, hwnd, nullptr);
-        DestroyMenu(menu);
-
-        // Checkable toggles flip in place and reopen the menu; everything else
-        // (or dismissal, cmd == 0) falls through to the action handlers below.
-        bool toggled = true;
-        if (cmd == kIdMenuEditOnCapture) {
-            s->settings->editOnCapture = !s->settings->editOnCapture;
-        } else if (cmd == kIdMenuFmtPng) {
-            s->settings->snapshot.png = !s->settings->snapshot.png;
-        } else if (cmd == kIdMenuFmtJxr) {
-            s->settings->snapshot.jxr = !s->settings->snapshot.jxr;
-        } else if (cmd == kIdMenuFmtUltraHdr) {
-            s->settings->snapshot.ultraHdrJpeg =
-                !s->settings->snapshot.ultraHdrJpeg;
-        } else if (cmd == kIdMenuFmtAvif) {
-            s->settings->snapshot.avif = !s->settings->snapshot.avif;
-        } else if (cmd == kIdMenuFmtAvifModePq) {
-            s->settings->snapshot.avifMode = AvifHdrMode::Pq;
-        } else if (cmd == kIdMenuFmtAvifModeGainMap) {
-            s->settings->snapshot.avifMode = AvifHdrMode::GainMap;
-        } else if (cmd == kIdMenuAutoCopyCapture) {
-            s->settings->autoCopyCapture = !s->settings->autoCopyCapture;
-        } else {
-            toggled = false;
-        }
-        if (toggled) {
-            InvalidateRect(hwnd, nullptr, FALSE);
-            continue;
-        }
-
-        if (cmd == kIdMenuOutputFolder) {
-            const std::wstring seed = s->settings->outputFolder.empty()
-                                          ? DefaultOutputDir().wstring()
-                                          : s->settings->outputFolder;
-            std::wstring picked = PickFolder(hwnd, seed);
-            if (!picked.empty()) {
-                if (picked == DefaultOutputDir().wstring()) {
-                    s->settings->outputFolder.clear();
-                } else {
-                    s->settings->outputFolder = picked;
-                }
-            }
-        } else if (cmd == kIdMenuOutputFolderReset) {
-            s->settings->outputFolder.clear();
-        }
-#ifdef SUNDIAL_HAS_UPDATER
-        else if (cmd == kIdMenuCheckUpdates) {
-            // Close the toolbar first: the restart-to-update path (if the user
-            // accepts) posts WM_QUIT to this thread, and we want that to unwind
-            // the main message loop, not the toolbar's own modal loop.
-            PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            CheckForUpdatesInBackground(/*silent=*/false, GetCurrentThreadId());
-        }
-#endif
-        else if (cmd == kIdMenuAbout) {
-            ShowAbout(hwnd);
-        }
-        break;
-    }
-}
-
 // ---- toolbar / control-bar window proc -----------------------------------
 
 LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1062,7 +908,8 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     break;
                 case kIdSettings:
-                    ShowSettingsMenu(hwnd, s);
+                    ShowSettingsDialog(hwnd, *s->settings);
+                    InvalidateRect(hwnd, nullptr, FALSE);
                     break;
             }
             return 0;

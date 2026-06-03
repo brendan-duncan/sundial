@@ -213,8 +213,8 @@ Remove-Item -Recurse -Force build
 ## Runtime model
 
 - Single instance enforced by a named mutex `SundialInstance.v1`.
-- Global hotkey **Win+Shift+X** shows the toolbar (does not capture
-  immediately).
+- Global hotkey **Win+Shift+X** (the default; configurable in **Settings**)
+  shows the toolbar (does not capture immediately).
 - No tray icon yet — exit via Task Manager.
 - Pictures path comes from `FOLDERID_Pictures`, which redirects through
   OneDrive on this user's machine. Captures actually land in

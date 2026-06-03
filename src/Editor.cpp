@@ -3,9 +3,11 @@
 #include "Clipboard.h"
 #include "ImageOps.h"
 #include "Resource.h"
+#include "SettingsDialog.h"
 #include "ShaderTonemap.h"
 #include "ShellIntegration.h"
 #include "Tonemap.h"
+#include "TrayIcon.h"
 #include "Version.h"
 
 #include <Windows.h>
@@ -221,6 +223,14 @@ struct EditorContext {
     SnapshotFormats snapshot;
     bool editOnCapture = false;
     bool autoCopyCapture = true;
+
+    // Global capture hotkey, mirrored from AppSettings. The Settings popup edits
+    // these; on change they're persisted to settings.ini and the resident tray
+    // process is pinged (TrayReloadHotkeyMessage) so it re-registers live.
+    // capturingHotkey is true while the popup waits for the next key press.
+    unsigned hotkeyMods = kHotkeyWin | kHotkeyShift;
+    unsigned hotkeyVk = 'X';
+    bool capturingHotkey = false;
 
     // When non-empty, the Save button overwrites this path and Save As
     // opens its dialog with this directory + stem pre-filled. Empty for a
@@ -871,6 +881,8 @@ void PersistEditorSettings(const EditorContext& ctx) {
     cur.autoCopyCapture = ctx.autoCopyCapture;
     cur.outputFolder = ctx.outputFolder;
     cur.tonemap = ctx.params;
+    cur.hotkeyMods = ctx.hotkeyMods;
+    cur.hotkeyVk = ctx.hotkeyVk;
     SaveSettings(cur);
 }
 
@@ -882,97 +894,38 @@ void DrawSettingsPopup(EditorContext& ctx) {
         return;
     }
 
-    bool changed = false;
+    // Mirror the editor's settings fields into an AppSettings, draw the shared
+    // controls (same UI as the standalone Settings dialog), then copy any change
+    // back and persist - keeping the two settings surfaces identical.
+    AppSettings s{};
+    s.snapshot = ctx.snapshot;
+    s.editOnCapture = ctx.editOnCapture;
+    s.autoCopyCapture = ctx.autoCopyCapture;
+    s.outputFolder = ctx.outputFolder;
+    s.hotkeyMods = ctx.hotkeyMods;
+    s.hotkeyVk = ctx.hotkeyVk;
 
-    ImGui::TextUnformatted("Image Snapshot Formats");
-    ImGui::TextDisabled("Video recording has its own format settings.");
-    ImGui::Separator();
-
-    changed |= ImGui::Checkbox("PNG (SDR)", &ctx.snapshot.png);
-    changed |= ImGui::Checkbox("JPEG XR / .jxr (HDR)", &ctx.snapshot.jxr);
-#ifdef SUNDIAL_HAS_ULTRAHDR
-    changed |= ImGui::Checkbox("Ultra HDR JPEG / .jpg (SDR+HDR)",
-                               &ctx.snapshot.ultraHdrJpeg);
-#else
-    ImGui::BeginDisabled();
-    bool noUltra = false;
-    ImGui::Checkbox("Ultra HDR JPEG / .jpg (not built)", &noUltra);
-    ImGui::EndDisabled();
-#endif
-#ifdef SUNDIAL_HAS_AVIF
-    changed |= ImGui::Checkbox("HDR AVIF / .avif (HDR)", &ctx.snapshot.avif);
-    // The two encodings are mutually exclusive; show as a radio pair, grayed
-    // until AVIF is enabled.
-    if (!ctx.snapshot.avif) {
-        ImGui::BeginDisabled();
-    }
-    int avifMode = static_cast<int>(ctx.snapshot.avifMode);
-    ImGui::Indent();
-    bool modeChanged = false;
-    modeChanged |= ImGui::RadioButton("PQ (10-bit HDR)##avifmode", &avifMode,
-                                      static_cast<int>(AvifHdrMode::Pq));
-    ImGui::SameLine();
-    modeChanged |= ImGui::RadioButton("Gain map (SDR+HDR)##avifmode", &avifMode,
-                                      static_cast<int>(AvifHdrMode::GainMap));
-    ImGui::Unindent();
-    if (modeChanged) {
-        ctx.snapshot.avifMode = static_cast<AvifHdrMode>(avifMode);
-        changed = true;
-    }
-    if (!ctx.snapshot.avif) {
-        ImGui::EndDisabled();
-    }
-#else
-    ImGui::BeginDisabled();
-    bool noAvif = false;
-    ImGui::Checkbox("HDR AVIF / .avif (not built)", &noAvif);
-    ImGui::EndDisabled();
-#endif
-    if (ctx.source && !ctx.source->isHdr) {
-        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
-                           "Current capture is SDR - only PNG will be written.");
-    }
-
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::Separator();
-
-    changed |= ImGui::Checkbox("Edit on Capture", &ctx.editOnCapture);
-    changed |= ImGui::Checkbox("Auto Copy Capture", &ctx.autoCopyCapture);
-
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::TextUnformatted("Output Folder");
-    AppSettings probe{};
-    probe.outputFolder = ctx.outputFolder;
-    const std::string folderUtf8 =
-        WideToUtf8(ResolveOutputDir(probe).wstring());
-    ImGui::TextWrapped("%s", folderUtf8.c_str());
-    if (ImGui::Button("Change...")) {
-        const std::wstring seed = ctx.outputFolder.empty()
-                                      ? DefaultOutputDir().wstring()
-                                      : ctx.outputFolder;
-        std::wstring picked = PickFolderDialog(ctx.hwnd, seed);
-        if (!picked.empty()) {
-            ctx.outputFolder =
-                (picked == DefaultOutputDir().wstring()) ? std::wstring{}
-                                                         : picked;
-            changed = true;
-        }
-    }
-    ImGui::SameLine();
-    const bool customFolder = !ctx.outputFolder.empty();
-    if (!customFolder) {
-        ImGui::BeginDisabled();
-    }
-    if (ImGui::Button("Reset to Default")) {
-        ctx.outputFolder.clear();
-        changed = true;
-    }
-    if (!customFolder) {
-        ImGui::EndDisabled();
-    }
-
+    const bool isHdr = ctx.source && ctx.source->isHdr;
+    const bool* captureIsHdr = ctx.source ? &isHdr : nullptr;
+    bool hotkeyChanged = false;
+    const bool changed = DrawSettingsControls(s, ctx.hwnd, captureIsHdr,
+                                              ctx.capturingHotkey,
+                                              hotkeyChanged);
     if (changed) {
+        ctx.snapshot = s.snapshot;
+        ctx.editOnCapture = s.editOnCapture;
+        ctx.autoCopyCapture = s.autoCopyCapture;
+        ctx.outputFolder = s.outputFolder;
+        ctx.hotkeyMods = s.hotkeyMods;
+        ctx.hotkeyVk = s.hotkeyVk;
         PersistEditorSettings(ctx);
+    }
+    if (hotkeyChanged) {
+        // Push the new hotkey to the resident tray instance so it re-registers
+        // without a restart (no-op if no resident instance is running).
+        if (HWND running = FindRunningTrayWindow()) {
+            PostMessageW(running, TrayReloadHotkeyMessage(), 0, 0);
+        }
     }
 
     ImGui::Dummy(ImVec2(0, 8));
@@ -1870,6 +1823,8 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     ctx.snapshot = settings.snapshot;
     ctx.editOnCapture = settings.editOnCapture;
     ctx.autoCopyCapture = settings.autoCopyCapture;
+    ctx.hotkeyMods = settings.hotkeyMods;
+    ctx.hotkeyVk = settings.hotkeyVk;
     ctx.presetNames = ListPresets();
 
     EnsureClassRegistered();
@@ -2094,6 +2049,8 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
         ctx.result.updatedSettings.editOnCapture = ctx.editOnCapture;
         ctx.result.updatedSettings.autoCopyCapture = ctx.autoCopyCapture;
         ctx.result.updatedSettings.outputFolder = ctx.outputFolder;
+        ctx.result.updatedSettings.hotkeyMods = ctx.hotkeyMods;
+        ctx.result.updatedSettings.hotkeyVk = ctx.hotkeyVk;
         // Look-picker mode returns params only; no still is produced.
         if (!ctx.tonemapOnly) {
             ctx.result.editedFrame = ProduceEditedFrame(ctx);

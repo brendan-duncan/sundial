@@ -186,6 +186,64 @@ bool ApplyTonemapKey(TonemapParams& p, const std::string& key,
 
 }  // namespace
 
+std::string HotkeyKeyName(unsigned vk) {
+    if (vk >= 'A' && vk <= 'Z') {
+        return std::string(1, char(vk));
+    }
+    if (vk >= '0' && vk <= '9') {
+        return std::string(1, char(vk));
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        return "F" + std::to_string(int(vk - VK_F1 + 1));
+    }
+    switch (vk) {
+        case VK_SPACE: return "Space";
+        case VK_OEM_7: return "'";
+        case VK_OEM_COMMA: return ",";
+        case VK_OEM_MINUS: return "-";
+        case VK_OEM_PERIOD: return ".";
+        case VK_OEM_2: return "/";
+        case VK_OEM_1: return ";";
+        case VK_OEM_PLUS: return "=";
+        case VK_OEM_4: return "[";
+        case VK_OEM_5: return "\\";
+        case VK_OEM_6: return "]";
+        case VK_OEM_3: return "`";
+        case VK_INSERT: return "Insert";
+        case VK_DELETE: return "Delete";
+        case VK_HOME: return "Home";
+        case VK_END: return "End";
+        case VK_PRIOR: return "PageUp";
+        case VK_NEXT: return "PageDown";
+        case VK_UP: return "Up";
+        case VK_DOWN: return "Down";
+        case VK_LEFT: return "Left";
+        case VK_RIGHT: return "Right";
+        default: break;
+    }
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "Key 0x%02X", vk);
+    return buf;
+}
+
+std::string HotkeyToString(unsigned mods, unsigned vk) {
+    std::string s;
+    if (mods & kHotkeyWin) {
+        s += "Win+";
+    }
+    if (mods & kHotkeyControl) {
+        s += "Ctrl+";
+    }
+    if (mods & kHotkeyAlt) {
+        s += "Alt+";
+    }
+    if (mods & kHotkeyShift) {
+        s += "Shift+";
+    }
+    s += HotkeyKeyName(vk);
+    return s;
+}
+
 std::filesystem::path SettingsFilePath() {
     return AppDataDir() / L"settings.ini";
 }
@@ -265,6 +323,16 @@ AppSettings LoadSettings() {
             s.autoCopyCapture = asBool(value);
         } else if (key == "output_folder") {
             s.outputFolder = Utf8ToWide(value);
+        } else if (key == "hotkey_mods") {
+            try {
+                s.hotkeyMods = unsigned(std::stoul(value));
+            } catch (...) {
+            }
+        } else if (key == "hotkey_vk") {
+            try {
+                s.hotkeyVk = unsigned(std::stoul(value));
+            } catch (...) {
+            }
         } else {
             ApplyTonemapKey(s.tonemap, key, value);
         }
@@ -293,6 +361,8 @@ void SaveSettings(const AppSettings& s) {
     f << "auto_copy_capture = " << (s.autoCopyCapture ? "true" : "false")
       << "\n";
     f << "output_folder = " << WideToUtf8(s.outputFolder) << "\n";
+    f << "hotkey_mods = " << s.hotkeyMods << "\n";
+    f << "hotkey_vk = " << s.hotkeyVk << "\n";
     WriteTonemapParams(f, s.tonemap);
 }
 

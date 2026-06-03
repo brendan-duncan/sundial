@@ -17,6 +17,7 @@ constexpr UINT kIdExit = 3002;
 constexpr UINT kIdEditImage = 3003;
 constexpr UINT kIdCheckUpdates = 3004;
 constexpr UINT kIdAbout = 3005;
+constexpr UINT kIdSettings = 3006;
 constexpr UINT kIconId = 1;
 
 void EnsureClassRegistered() {
@@ -58,6 +59,11 @@ UINT TrayShowToolbarMessage() {
     return msg;
 }
 
+UINT TrayReloadHotkeyMessage() {
+    static const UINT msg = RegisterWindowMessageW(L"SundialReloadHotkey.v1");
+    return msg;
+}
+
 HWND FindRunningTrayWindow() {
     // The tray window is message-only (HWND_MESSAGE parent), so it must be
     // searched for under HWND_MESSAGE rather than the desktop.
@@ -70,6 +76,14 @@ LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // left-click on the tray icon.
         if (primary_) {
             primary_();
+        }
+        return 0;
+    }
+    if (msg == TrayReloadHotkeyMessage()) {
+        // An editor process changed the capture hotkey; re-register it here on
+        // the resident instance (and on this, the registering thread).
+        if (reloadHotkey_) {
+            reloadHotkey_();
         }
         return 0;
     }
@@ -98,6 +112,11 @@ LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case kIdEditImage:
                 if (editImage_) {
                     editImage_();
+                }
+                return 0;
+            case kIdSettings:
+                if (settings_) {
+                    settings_();
                 }
                 return 0;
             case kIdCheckUpdates:
@@ -129,8 +148,10 @@ void TrayIcon::ShowContextMenu() {
     const std::wstring versionItem = L"Sundial v" + AppVersionW();
     AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, versionItem.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kIdCapture, L"Capture\tWin+Shift+X");
+    const std::wstring captureItem = L"Capture\t" + hotkeyAccel_;
+    AppendMenuW(menu, MF_STRING, kIdCapture, captureItem.c_str());
     AppendMenuW(menu, MF_STRING, kIdEditImage, L"Edit Image...");
+    AppendMenuW(menu, MF_STRING, kIdSettings, L"Settings...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     if (checkUpdates_) {
         AppendMenuW(menu, MF_STRING, kIdCheckUpdates, L"Check for Updates...");
@@ -176,6 +197,22 @@ bool TrayIcon::Initialize(const wchar_t* tooltip) {
         return false;
     }
     return true;
+}
+
+void TrayIcon::SetHotkeyText(const std::wstring& accel) {
+    hotkeyAccel_ = accel;
+    if (!hwnd_) {
+        return;
+    }
+    const std::wstring tip = L"Sundial  -  " + accel;
+    lstrcpynW(nid_.szTip, tip.c_str(), ARRAYSIZE(nid_.szTip));
+    NOTIFYICONDATAW mod{};
+    mod.cbSize = sizeof(mod);
+    mod.hWnd = hwnd_;
+    mod.uID = kIconId;
+    mod.uFlags = NIF_TIP;
+    lstrcpynW(mod.szTip, tip.c_str(), ARRAYSIZE(mod.szTip));
+    Shell_NotifyIconW(NIM_MODIFY, &mod);
 }
 
 void TrayIcon::Shutdown() {

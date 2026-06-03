@@ -3,6 +3,7 @@
 #include <shellapi.h>
 
 #include <functional>
+#include <string>
 
 namespace sundial {
 
@@ -18,9 +19,18 @@ public:
 
     void OnPrimaryAction(Handler h) { primary_ = std::move(h); }
     void OnEditImage(Handler h)     { editImage_ = std::move(h); }
+    void OnSettings(Handler h)      { settings_ = std::move(h); }
     void OnCheckUpdates(Handler h)  { checkUpdates_ = std::move(h); }
     void OnAbout(Handler h)         { about_ = std::move(h); }
     void OnExit(Handler h)          { exit_ = std::move(h); }
+    // Fired when another Sundial process (an editor) changes the capture hotkey
+    // and posts TrayReloadHotkeyMessage; the handler reloads settings and
+    // re-registers the hotkey on this (the resident) process's thread.
+    void OnReloadHotkey(Handler h)  { reloadHotkey_ = std::move(h); }
+
+    // Update the accelerator label shown in the tooltip and context menu (e.g.
+    // "Win+Shift+X") to match the currently registered hotkey.
+    void SetHotkeyText(const std::wstring& accel);
 
     // Static because the WNDCLASS registration helper needs it from a
     // free-function context. Not called by clients.
@@ -34,9 +44,12 @@ private:
     NOTIFYICONDATAW nid_{};
     Handler primary_;
     Handler editImage_;
+    Handler settings_;
     Handler checkUpdates_;
     Handler about_;
     Handler exit_;
+    Handler reloadHotkey_;
+    std::wstring hotkeyAccel_ = L"Win+Shift+X";
 };
 
 // Cross-instance signaling. A second launch of sundial.exe uses these to ask
@@ -47,5 +60,9 @@ HWND FindRunningTrayWindow();
 // Registered window message (the same value in every process) that, posted to
 // the tray window, fires the primary action there.
 UINT TrayShowToolbarMessage();
+// Registered window message posted by an editor process after it changes the
+// capture hotkey, asking the resident instance to reload settings and
+// re-register the hotkey (which must happen on the thread that registered it).
+UINT TrayReloadHotkeyMessage();
 
 }  // namespace sundial

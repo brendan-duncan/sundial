@@ -109,6 +109,16 @@ inline bool AnySnapshotFormatApplies(const SnapshotFormats& f, bool isHdr) {
     return f.png || (isHdr && (f.jxr || f.ultraHdrJpeg || f.avif));
 }
 
+// Global-hotkey modifier bits. These match the Win32 MOD_* values from
+// winuser.h exactly, so a value can be passed straight to RegisterHotKey while
+// Settings.h itself stays free of <Windows.h>.
+enum HotkeyMod : unsigned {
+    kHotkeyAlt = 0x0001,      // MOD_ALT
+    kHotkeyControl = 0x0002,  // MOD_CONTROL
+    kHotkeyShift = 0x0004,    // MOD_SHIFT
+    kHotkeyWin = 0x0008,      // MOD_WIN
+};
+
 struct AppSettings {
     // Snipping-Tool-style default: a capture saves with the current conversion
     // settings, copies to the clipboard, and shows a toast - it does NOT open
@@ -122,7 +132,18 @@ struct AppSettings {
     // ResolveOutputDir() rather than reading this field directly.
     std::wstring outputFolder;
     TonemapParams tonemap;
+    // Global hotkey that pops the capture toolbar. hotkeyMods is a bitmask of
+    // HotkeyMod (== Win32 MOD_*); hotkeyVk is a virtual-key code. Default
+    // Win+Shift+X.
+    unsigned hotkeyMods = kHotkeyWin | kHotkeyShift;
+    unsigned hotkeyVk = 'X';
 };
+
+// Human-readable hotkey, e.g. "Win+Shift+X" - used for the tray tooltip/menu
+// and the Settings UI. HotkeyKeyName returns just the key portion ("X", "F5",
+// "Space", ...). Both produce ASCII.
+std::string HotkeyToString(unsigned mods, unsigned vk);
+std::string HotkeyKeyName(unsigned vk);
 
 // Settings live at %APPDATA%\Sundial\settings.ini.
 std::filesystem::path SettingsFilePath();

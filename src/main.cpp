@@ -17,6 +17,7 @@
 #include "HdrCapture.h"
 #include "ImageOps.h"
 #include "Settings.h"
+#include "SettingsDialog.h"
 #include "ShellIntegration.h"
 #include "Toast.h"
 #include "Tonemap.h"
@@ -38,6 +39,34 @@ DWORD g_mainThreadId = 0;
 namespace {
 
 constexpr int kHotkeyToolbar = 1;
+
+// The hotkey combo currently registered with RegisterHotKey, so a failed
+// re-registration can roll back to whatever was working before.
+struct HotkeyReg {
+    UINT mods = MOD_WIN | MOD_SHIFT;
+    UINT vk = 'X';
+};
+HotkeyReg g_activeHotkey;
+
+// Widen an ASCII string (hotkey labels are ASCII) for the Win32 UI.
+std::wstring WidenAscii(const std::string& s) {
+    return std::wstring(s.begin(), s.end());
+}
+
+// (Re)register the global capture hotkey on the calling thread. On failure the
+// previously-registered combo is restored so the app always keeps a working
+// hotkey. Returns true if the requested combo took effect.
+bool ApplyHotkey(UINT mods, UINT vk) {
+    UnregisterHotKey(nullptr, kHotkeyToolbar);
+    if (vk != 0 &&
+        RegisterHotKey(nullptr, kHotkeyToolbar, mods | MOD_NOREPEAT, vk)) {
+        g_activeHotkey = {mods, vk};
+        return true;
+    }
+    RegisterHotKey(nullptr, kHotkeyToolbar, g_activeHotkey.mods | MOD_NOREPEAT,
+                   g_activeHotkey.vk);
+    return false;
+}
 
 // Max bounding box for the toast's screenshot preview. Kept in sync with the
 // thumbnail container size in Toast.cpp - we letterbox the source into this
@@ -495,6 +524,8 @@ void EditExistingFile(sundial::AppSettings& settings,
     }
     settings.tonemap = result.updatedSettings.tonemap;
     settings.snapshot = result.updatedSettings.snapshot;
+    settings.hotkeyMods = result.updatedSettings.hotkeyMods;
+    settings.hotkeyVk = result.updatedSettings.hotkeyVk;
     sundial::SaveSettings(settings);
     const SaveMode mode =
         result.explicitPath ? SaveMode::ExplicitFile : SaveMode::Snapshot;
@@ -535,6 +566,8 @@ void EditCapturedTemp(sundial::AppSettings& settings,
     }
     settings.tonemap = result.updatedSettings.tonemap;
     settings.snapshot = result.updatedSettings.snapshot;
+    settings.hotkeyMods = result.updatedSettings.hotkeyMods;
+    settings.hotkeyVk = result.updatedSettings.hotkeyVk;
     sundial::SaveSettings(settings);
     // Copy before the toast: SaveAndNotify's child-process toast blocks this
     // thread until dismissed, and the clipboard should be ready immediately.
@@ -676,11 +709,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // --startup so login launches stay in the tray (vpk creates it argless).
     sundial::EnsureStartupShortcutArgs();
 
-    if (!RegisterHotKey(nullptr, kHotkeyToolbar,
-                        MOD_WIN | MOD_SHIFT | MOD_NOREPEAT, 'X')) {
+    g_mainThreadId = GetCurrentThreadId();
+    sundial::AppSettings settings = sundial::LoadSettings();
+
+    // Register the user's configured hotkey (default Win+Shift+X). If it can't
+    // be registered (reserved by the OS / taken by another app), fall back to
+    // the default so a bad saved combo can't leave the app with no hotkey; only
+    // when even the default fails do we report and exit.
+    if (!ApplyHotkey(settings.hotkeyMods, settings.hotkeyVk) &&
+        !ApplyHotkey(MOD_WIN | MOD_SHIFT, 'X')) {
         wchar_t buf[256];
         swprintf_s(buf,
-                   L"Sundial could not register Win+Shift+X as a hotkey "
+                   L"Sundial could not register a global capture hotkey "
                    L"(Win32 error %lu). Another app is probably using it.",
                    GetLastError());
         MessageBoxW(nullptr, buf, L"Sundial", MB_ICONERROR);
@@ -689,9 +729,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         CoUninitialize();
         return 1;
     }
-
-    g_mainThreadId = GetCurrentThreadId();
-    sundial::AppSettings settings = sundial::LoadSettings();
 
     // Clean up any handoff temp files left behind by editor processes that
     // crashed before deleting their own (best effort).
@@ -712,6 +749,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     sundial::TrayIcon tray;
     tray.OnPrimaryAction(runFlow);
     tray.OnEditImage([&] { RunEditImageFlow(settings); });
+    tray.OnSettings([&] {
+        // Reload first so the dialog edits the latest on-disk settings (an
+        // editor process may have changed them since the last reload).
+        settings = sundial::LoadSettings();
+        sundial::ShowSettingsDialog(nullptr, settings);
+    });
 #ifdef SUNDIAL_HAS_UPDATER
     // Only offered when the updater is compiled in. Non-silent: reports
     // "up to date" / errors too, since the user asked explicitly.
@@ -721,7 +764,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 #endif
     tray.OnAbout([] { sundial::ShowAbout(nullptr); });
     tray.OnExit([] { PostQuitMessage(0); });
-    tray.Initialize(L"Sundial  -  Win+Shift+X");
+    // An editor process changed the hotkey: reload settings and re-register it
+    // here (this runs on the main thread, the one that owns the hotkey).
+    tray.OnReloadHotkey([&] {
+        settings = sundial::LoadSettings();
+        ApplyHotkey(settings.hotkeyMods, settings.hotkeyVk);
+        tray.SetHotkeyText(WidenAscii(
+            sundial::HotkeyToString(g_activeHotkey.mods, g_activeHotkey.vk)));
+    });
+    const std::wstring accel =
+        WidenAscii(sundial::HotkeyToString(g_activeHotkey.mods,
+                                           g_activeHotkey.vk));
+    tray.Initialize((L"Sundial  -  " + accel).c_str());
+    tray.SetHotkeyText(accel);
 
     // Check for a newer release in the background. Silent unless an update is
     // actually downloaded (then it prompts to restart). Posts WM_QUIT to this
