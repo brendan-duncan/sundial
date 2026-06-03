@@ -197,9 +197,16 @@ struct EditorContext {
 
     // Interactive-crop drag state. cropDragAnchor is the screen-space point
     // where the drag started; the rect spans from there to the current mouse.
+    // cropGrab records what the press grabbed: a fresh rect (New), the whole
+    // rect (Move), or one of the eight resize handles. cropDrag{X0,Y0,X1,Y1}
+    // snapshot the crop bounds (source pixels) at press time so each frame's
+    // delta is applied to a stable base rather than accumulating.
+    enum class CropGrab { None, New, Move, TL, T, TR, R, BR, B, BL, L };
     bool cropDragActive = false;
     bool cropDragMoved = false;   // true once mouse has moved >threshold px
     ImVec2 cropDragAnchor{};
+    CropGrab cropGrab = CropGrab::None;
+    int cropDragX0 = 0, cropDragY0 = 0, cropDragX1 = 0, cropDragY1 = 0;
 
     // App settings mirrored while the editor runs. The Settings popup edits
     // these and writes them straight back to settings.ini (so the tray and any
@@ -989,7 +996,9 @@ void DrawSidebar(EditorContext& ctx) {
     if (!ctx.tonemapOnly) {
         ImGui::Dummy(ImVec2(0, 8));
         ImGui::TextUnformatted("Crop");
-        ImGui::TextDisabled("Drag on the preview to redraw the crop.");
+        ImGui::TextDisabled(
+            "Drag on the preview to draw a crop; drag the handles to resize "
+            "or the inside to move it.");
         ImGui::Separator();
         const int maxW = int(ctx.source->width);
         const int maxH = int(ctx.source->height);
@@ -1035,70 +1044,169 @@ void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
     if (ctx.tonemapOnly) return;
     const float scaleX = w / float(ctx.source->width);
     const float scaleY = h / float(ctx.source->height);
+    const int srcW = int(ctx.source->width);
+    const int srcH = int(ctx.source->height);
+
+    using CropGrab = EditorContext::CropGrab;
+
+    // Current crop rect in screen space (recomputed after interaction below).
+    ImVec2 cropTL{imgTL.x + ctx.cropX * scaleX, imgTL.y + ctx.cropY * scaleY};
+    ImVec2 cropBR{imgTL.x + (ctx.cropX + ctx.cropW) * scaleX,
+                  imgTL.y + (ctx.cropY + ctx.cropH) * scaleY};
+    const bool cropIsFull = ctx.cropX == 0 && ctx.cropY == 0 &&
+                            ctx.cropW == srcW && ctx.cropH == srcH;
 
     if (interactive) {
         ImGui::SetCursorScreenPos(imgTL);
         ImGui::InvisibleButton("##cropArea", ImVec2(w, h));
 
-        const auto screenToSource = [&](ImVec2 p) {
-            const float sx = (p.x - imgTL.x) / scaleX;
-            const float sy = (p.y - imgTL.y) / scaleY;
-            return ImVec2(
-                std::clamp(sx, 0.0f, float(ctx.source->width)),
-                std::clamp(sy, 0.0f, float(ctx.source->height)));
+        // Screen-space positions of the eight resize handles, in the same
+        // order they're hit-tested and drawn.
+        const float midX = (cropTL.x + cropBR.x) * 0.5f;
+        const float midY = (cropTL.y + cropBR.y) * 0.5f;
+        struct Handle { CropGrab mode; ImVec2 pos; };
+        const Handle handles[] = {
+            {CropGrab::TL, {cropTL.x, cropTL.y}},
+            {CropGrab::T,  {midX,     cropTL.y}},
+            {CropGrab::TR, {cropBR.x, cropTL.y}},
+            {CropGrab::R,  {cropBR.x, midY}},
+            {CropGrab::BR, {cropBR.x, cropBR.y}},
+            {CropGrab::B,  {midX,     cropBR.y}},
+            {CropGrab::BL, {cropTL.x, cropBR.y}},
+            {CropGrab::L,  {cropTL.x, midY}},
         };
+        constexpr float kHandleHitR = 9.0f;
+
+        // Decide what a press at point m grabs: a nearby handle, the rect
+        // interior (Move), or empty space / the un-cropped image (New).
+        const auto classify = [&](ImVec2 m) -> CropGrab {
+            for (const auto& hd : handles) {
+                const float dx = m.x - hd.pos.x, dy = m.y - hd.pos.y;
+                if (dx * dx + dy * dy <= kHandleHitR * kHandleHitR)
+                    return hd.mode;
+            }
+            if (!cropIsFull && m.x > cropTL.x && m.x < cropBR.x &&
+                m.y > cropTL.y && m.y < cropBR.y)
+                return CropGrab::Move;
+            return CropGrab::New;
+        };
+
+        // Cursor feedback while hovering (but not mid-drag).
+        if (ImGui::IsItemHovered() && !ctx.cropDragActive) {
+            switch (classify(ImGui::GetIO().MousePos)) {
+                case CropGrab::TL: case CropGrab::BR:
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE); break;
+                case CropGrab::TR: case CropGrab::BL:
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW); break;
+                case CropGrab::T: case CropGrab::B:
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS); break;
+                case CropGrab::L: case CropGrab::R:
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); break;
+                case CropGrab::Move:
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll); break;
+                default: break;
+            }
+        }
+
         if (ImGui::IsItemActivated()) {
             ctx.cropDragActive = true;
             ctx.cropDragMoved = false;
             ctx.cropDragAnchor = ImGui::GetIO().MousePos;
+            ctx.cropGrab = classify(ctx.cropDragAnchor);
+            ctx.cropDragX0 = ctx.cropX;
+            ctx.cropDragY0 = ctx.cropY;
+            ctx.cropDragX1 = ctx.cropX + ctx.cropW;
+            ctx.cropDragY1 = ctx.cropY + ctx.cropH;
         }
         if (ctx.cropDragActive && ImGui::IsItemActive()) {
             const ImVec2 mouse = ImGui::GetIO().MousePos;
-            // Only treat this as a crop drag once the mouse has moved a
-            // small threshold; a bare click shouldn't redefine the crop.
-            constexpr float kDragThresholdPx = 4.0f;
-            if (!ctx.cropDragMoved) {
-                const float dx = mouse.x - ctx.cropDragAnchor.x;
-                const float dy = mouse.y - ctx.cropDragAnchor.y;
-                if (dx * dx + dy * dy >=
-                    kDragThresholdPx * kDragThresholdPx) {
-                    ctx.cropDragMoved = true;
+            if (ctx.cropGrab == CropGrab::New) {
+                // Draw a fresh rect from the press point. Only kicks in once
+                // the mouse has moved a little, so a bare click won't wipe the
+                // current crop.
+                const auto screenToSource = [&](ImVec2 p) {
+                    return ImVec2(
+                        std::clamp((p.x - imgTL.x) / scaleX, 0.0f, float(srcW)),
+                        std::clamp((p.y - imgTL.y) / scaleY, 0.0f, float(srcH)));
+                };
+                constexpr float kDragThresholdPx = 4.0f;
+                if (!ctx.cropDragMoved) {
+                    const float dx = mouse.x - ctx.cropDragAnchor.x;
+                    const float dy = mouse.y - ctx.cropDragAnchor.y;
+                    if (dx * dx + dy * dy >=
+                        kDragThresholdPx * kDragThresholdPx)
+                        ctx.cropDragMoved = true;
                 }
-            }
-            if (ctx.cropDragMoved) {
-                ImVec2 a = screenToSource(ctx.cropDragAnchor);
-                ImVec2 c = screenToSource(mouse);
-                int x0 = int(std::floor(std::min(a.x, c.x)));
-                int y0 = int(std::floor(std::min(a.y, c.y)));
-                int x1 = int(std::ceil(std::max(a.x, c.x)));
-                int y1 = int(std::ceil(std::max(a.y, c.y)));
-                ctx.cropX = std::clamp(x0, 0, int(ctx.source->width));
-                ctx.cropY = std::clamp(y0, 0, int(ctx.source->height));
-                ctx.cropW = std::max(1, std::clamp(x1, 0,
-                                                   int(ctx.source->width)) -
-                                            ctx.cropX);
-                ctx.cropH = std::max(1, std::clamp(y1, 0,
-                                                   int(ctx.source->height)) -
-                                            ctx.cropY);
+                if (ctx.cropDragMoved) {
+                    ImVec2 a = screenToSource(ctx.cropDragAnchor);
+                    ImVec2 c = screenToSource(mouse);
+                    int x0 = int(std::floor(std::min(a.x, c.x)));
+                    int y0 = int(std::floor(std::min(a.y, c.y)));
+                    int x1 = int(std::ceil(std::max(a.x, c.x)));
+                    int y1 = int(std::ceil(std::max(a.y, c.y)));
+                    ctx.cropX = std::clamp(x0, 0, srcW);
+                    ctx.cropY = std::clamp(y0, 0, srcH);
+                    ctx.cropW = std::max(1, std::clamp(x1, 0, srcW) - ctx.cropX);
+                    ctx.cropH = std::max(1, std::clamp(y1, 0, srcH) - ctx.cropY);
+                }
+            } else {
+                // Move or resize: apply the drag delta (in source pixels) to
+                // the bounds snapshotted at press time.
+                const int dx = int(std::lround(
+                    (mouse.x - ctx.cropDragAnchor.x) / scaleX));
+                const int dy = int(std::lround(
+                    (mouse.y - ctx.cropDragAnchor.y) / scaleY));
+                int x0 = ctx.cropDragX0, y0 = ctx.cropDragY0;
+                int x1 = ctx.cropDragX1, y1 = ctx.cropDragY1;
+                switch (ctx.cropGrab) {
+                    case CropGrab::Move: {
+                        const int cw = x1 - x0, chh = y1 - y0;
+                        x0 = std::clamp(x0 + dx, 0, srcW - cw);
+                        y0 = std::clamp(y0 + dy, 0, srcH - chh);
+                        x1 = x0 + cw;
+                        y1 = y0 + chh;
+                        break;
+                    }
+                    case CropGrab::TL: x0 += dx; y0 += dy; break;
+                    case CropGrab::T:               y0 += dy; break;
+                    case CropGrab::TR: x1 += dx; y0 += dy; break;
+                    case CropGrab::R:  x1 += dx;            break;
+                    case CropGrab::BR: x1 += dx; y1 += dy; break;
+                    case CropGrab::B:               y1 += dy; break;
+                    case CropGrab::BL: x0 += dx; y1 += dy; break;
+                    case CropGrab::L:  x0 += dx;            break;
+                    default: break;
+                }
+                x0 = std::clamp(x0, 0, srcW);
+                y0 = std::clamp(y0, 0, srcH);
+                x1 = std::clamp(x1, 0, srcW);
+                y1 = std::clamp(y1, 0, srcH);
+                // A handle dragged past the opposite edge flips the rect.
+                if (x1 < x0) std::swap(x0, x1);
+                if (y1 < y0) std::swap(y0, y1);
+                ctx.cropX = x0;
+                ctx.cropY = y0;
+                ctx.cropW = std::max(1, x1 - x0);
+                ctx.cropH = std::max(1, y1 - y0);
             }
         }
         if (ctx.cropDragActive && ImGui::IsItemDeactivated()) {
             ctx.cropDragActive = false;
             ctx.cropDragMoved = false;
+            ctx.cropGrab = CropGrab::None;
         }
     }
 
-    const ImVec2 cropTL{imgTL.x + ctx.cropX * scaleX,
-                        imgTL.y + ctx.cropY * scaleY};
-    const ImVec2 cropBR{imgTL.x + (ctx.cropX + ctx.cropW) * scaleX,
-                        imgTL.y + (ctx.cropY + ctx.cropH) * scaleY};
+    // Recompute the screen rect — the interaction above may have changed it.
+    cropTL = {imgTL.x + ctx.cropX * scaleX, imgTL.y + ctx.cropY * scaleY};
+    cropBR = {imgTL.x + (ctx.cropX + ctx.cropW) * scaleX,
+              imgTL.y + (ctx.cropY + ctx.cropH) * scaleY};
+    const bool drawFull = ctx.cropX == 0 && ctx.cropY == 0 &&
+                          ctx.cropW == srcW && ctx.cropH == srcH;
+
     auto* dl = ImGui::GetWindowDrawList();
     const ImU32 dim = IM_COL32(0, 0, 0, 130);
-    const bool cropIsFull =
-        ctx.cropX == 0 && ctx.cropY == 0 &&
-        ctx.cropW == int(ctx.source->width) &&
-        ctx.cropH == int(ctx.source->height);
-    if (!cropIsFull) {
+    if (!drawFull) {
         dl->AddRectFilled({imgTL.x, imgTL.y}, {imgTL.x + w, cropTL.y}, dim);
         dl->AddRectFilled({imgTL.x, cropBR.y},
                           {imgTL.x + w, imgTL.y + h}, dim);
@@ -1106,6 +1214,27 @@ void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
         dl->AddRectFilled({cropBR.x, cropTL.y}, {imgTL.x + w, cropBR.y}, dim);
     }
     dl->AddRect(cropTL, cropBR, IM_COL32(255, 255, 255, 220), 0.0f, 0, 2.0f);
+
+    // Resize handles: small filled squares at the four corners and edge
+    // midpoints. Only on the interactive panel.
+    if (interactive) {
+        const float midX = (cropTL.x + cropBR.x) * 0.5f;
+        const float midY = (cropTL.y + cropBR.y) * 0.5f;
+        const ImVec2 pts[] = {
+            {cropTL.x, cropTL.y}, {midX, cropTL.y}, {cropBR.x, cropTL.y},
+            {cropBR.x, midY},     {cropBR.x, cropBR.y}, {midX, cropBR.y},
+            {cropTL.x, cropBR.y}, {cropTL.x, midY},
+        };
+        constexpr float kHandleHalf = 4.0f;
+        for (const ImVec2& p : pts) {
+            dl->AddRectFilled({p.x - kHandleHalf, p.y - kHandleHalf},
+                              {p.x + kHandleHalf, p.y + kHandleHalf},
+                              IM_COL32(255, 255, 255, 255));
+            dl->AddRect({p.x - kHandleHalf, p.y - kHandleHalf},
+                        {p.x + kHandleHalf, p.y + kHandleHalf},
+                        IM_COL32(0, 0, 0, 200), 0.0f, 0, 1.0f);
+        }
+    }
 }
 
 // ImGui draw callbacks for the HDR backbuffer. The "begin" callback binds
