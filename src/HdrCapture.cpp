@@ -52,8 +52,12 @@ float QuerySdrWhiteLevelNits(const wchar_t* gdiName) {
         src.header.size = sizeof(src);
         src.header.adapterId = paths[i].sourceInfo.adapterId;
         src.header.id = paths[i].sourceInfo.id;
-        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) continue;
-        if (wcscmp(src.viewGdiDeviceName, gdiName) != 0) continue;
+        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) {
+            continue;
+        }
+        if (wcscmp(src.viewGdiDeviceName, gdiName) != 0) {
+            continue;
+        }
 
         // DISPLAYCONFIG_SDR_WHITE_LEVEL appeared in the Windows 10 1709 SDK
         // but isn't always reachable through the public Windows.h on older
@@ -91,18 +95,24 @@ ComPtr<IDXGIOutput6> GetPrimaryOutput6() {
     for (UINT a = 0;; ++a) {
         ComPtr<IDXGIAdapter1> adapter;
         HRESULT hr = factory->EnumAdapters1(a, &adapter);
-        if (hr == DXGI_ERROR_NOT_FOUND) break;
+        if (hr == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
         ThrowIfFailed(hr, "EnumAdapters1");
 
         for (UINT o = 0;; ++o) {
             ComPtr<IDXGIOutput> output;
             hr = adapter->EnumOutputs(o, &output);
-            if (hr == DXGI_ERROR_NOT_FOUND) break;
+            if (hr == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
             ThrowIfFailed(hr, "EnumOutputs");
 
             DXGI_OUTPUT_DESC desc{};
             ThrowIfFailed(output->GetDesc(&desc), "Output GetDesc");
-            if (!desc.AttachedToDesktop) continue;
+            if (!desc.AttachedToDesktop) {
+                continue;
+            }
 
             MONITORINFO mi{};
             mi.cbSize = sizeof(mi);
@@ -182,11 +192,17 @@ Frame CaptureFullScreen() {
             resource.Reset();
         }
         hr = dup->AcquireNextFrame(100, &frameInfo, &resource);
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT) continue;
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+            continue;
+        }
         ThrowIfFailed(hr, "IDXGIOutputDuplication::AcquireNextFrame");
 
-        if (frameInfo.LastPresentTime.QuadPart != 0) break;
-        if (attempt >= 4) break;  // accept stale frame if no presents are happening
+        if (frameInfo.LastPresentTime.QuadPart != 0) {
+            break;
+        }
+        if (attempt >= 4) {
+            break;  // accept stale frame if no presents are happening
+        }
     }
     if (!resource) {
         throw std::runtime_error("Timed out waiting for desktop frame");

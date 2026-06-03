@@ -30,7 +30,7 @@ struct ToolbarResult {
 // handle-adjustable rectangle, then Start runs a 3-second countdown and
 // records the region (HDR->SDR) to an .mp4 until Stop. On success the result
 // is Kind::VideoRecorded with videoPath set; the whole flow stays inside this
-// call, so it only returns once recording has finished or been cancelled.
+// call, so it only returns once recording has finished or been canceled.
 ToolbarResult ShowToolbar(AppSettings& settings);
 
 }  // namespace sundial

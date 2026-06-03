@@ -29,7 +29,9 @@ std::filesystem::path AppDataDir() {
 }
 
 std::string WideToUtf8(const std::wstring& w) {
-    if (w.empty()) return {};
+    if (w.empty()) {
+        return {};
+    }
     int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()),
                                 nullptr, 0, nullptr, nullptr);
     std::string s(size_t(n), '\0');
@@ -39,7 +41,9 @@ std::string WideToUtf8(const std::wstring& w) {
 }
 
 std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
+    if (s.empty()) {
+        return {};
+    }
     int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()),
                                 nullptr, 0);
     std::wstring w(size_t(n), L'\0');
@@ -57,7 +61,9 @@ struct SettingsFileLock {
     HANDLE handle = nullptr;
     SettingsFileLock() {
         handle = CreateMutexW(nullptr, FALSE, L"SundialSettings.v1");
-        if (handle) WaitForSingleObject(handle, 2000);
+        if (handle) {
+            WaitForSingleObject(handle, 2000);
+        }
     }
     ~SettingsFileLock() {
         if (handle) {
@@ -78,8 +84,12 @@ std::filesystem::path PresetsDir() {
 
 std::string Trim(std::string s) {
     auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
-    while (!s.empty() && isSpace(s.front())) s.erase(s.begin());
-    while (!s.empty() && isSpace(s.back())) s.pop_back();
+    while (!s.empty() && isSpace(s.front())) {
+        s.erase(s.begin());
+    }
+    while (!s.empty() && isSpace(s.back())) {
+        s.pop_back();
+    }
     return s;
 }
 
@@ -109,22 +119,46 @@ void WriteTonemapParams(std::ostream& f, const TonemapParams& p) {
 bool ApplyTonemapKey(TonemapParams& p, const std::string& key,
                      const std::string& value) {
     try {
-        if (key == "sdr_white_nits") p.sdrWhiteNits = std::stof(value);
-        else if (key == "exposure_ev") p.exposureEV = std::stof(value);
+        if (key == "sdr_white_nits") {
+            p.sdrWhiteNits = std::stof(value);
+        }
+        else if (key == "exposure_ev") {
+            p.exposureEV = std::stof(value);
+        }
         else if (key == "curve") {
             int c = std::clamp(std::stoi(value), 0, 7);
             p.curve = static_cast<TonemapCurve>(c);
         }
-        else if (key == "saturation") p.saturation = std::stof(value);
-        else if (key == "black_point_lift") p.blackPointLift = std::stof(value);
-        else if (key == "highlight_rolloff") p.highlightRolloff = std::stof(value);
-        else if (key == "temperature") p.temperature = std::stof(value);
-        else if (key == "tint") p.tint = std::stof(value);
-        else if (key == "gamut_compress") p.gamutCompress = std::stof(value);
-        else if (key == "sharpen") p.sharpen = std::stof(value);
-        else if (key == "r_gain") p.rGain = std::stof(value);
-        else if (key == "g_gain") p.gGain = std::stof(value);
-        else if (key == "b_gain") p.bGain = std::stof(value);
+        else if (key == "saturation") {
+            p.saturation = std::stof(value);
+        }
+        else if (key == "black_point_lift") {
+            p.blackPointLift = std::stof(value);
+        }
+        else if (key == "highlight_rolloff") {
+            p.highlightRolloff = std::stof(value);
+        }
+        else if (key == "temperature") {
+            p.temperature = std::stof(value);
+        }
+        else if (key == "tint") {
+            p.tint = std::stof(value);
+        }
+        else if (key == "gamut_compress") {
+            p.gamutCompress = std::stof(value);
+        }
+        else if (key == "sharpen") {
+            p.sharpen = std::stof(value);
+        }
+        else if (key == "r_gain") {
+            p.rGain = std::stof(value);
+        }
+        else if (key == "g_gain") {
+            p.gGain = std::stof(value);
+        }
+        else if (key == "b_gain") {
+            p.bGain = std::stof(value);
+        }
         else if (key == "output_gamma") {
             int g = std::clamp(std::stoi(value), 0, 2);
             p.outputGamma = static_cast<OutputGamma>(g);
@@ -141,7 +175,9 @@ bool ApplyTonemapKey(TonemapParams& p, const std::string& key,
         else if (key == "source_peak_nits") {
             p.sourcePeakNits = std::clamp(std::stof(value), 80.0f, 10000.0f);
         }
-        else return false;
+        else {
+            return false;
+        }
         return true;
     } catch (...) {
         return false;
@@ -171,7 +207,9 @@ std::filesystem::path DefaultOutputDir() {
 }
 
 std::filesystem::path ResolveOutputDir(const AppSettings& settings) {
-    if (settings.outputFolder.empty()) return DefaultOutputDir();
+    if (settings.outputFolder.empty()) {
+        return DefaultOutputDir();
+    }
     std::filesystem::path dir = settings.outputFolder;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
@@ -182,7 +220,9 @@ AppSettings LoadSettings() {
     AppSettings s;
     SettingsFileLock lock;
     std::ifstream f(SettingsFilePath());
-    if (!f) return s;
+    if (!f) {
+        return s;
+    }
 
     auto asBool = [](const std::string& v) { return v == "true" || v == "1"; };
 
@@ -195,10 +235,14 @@ AppSettings LoadSettings() {
     std::string line;
     while (std::getline(f, line)) {
         auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == std::string::npos) {
+            continue;
+        }
         std::string key = Trim(line.substr(0, eq));
         std::string value = Trim(line.substr(eq + 1));
-        if (key.empty()) continue;
+        if (key.empty()) {
+            continue;
+        }
 
         if (key == "edit_on_capture") {
             s.editOnCapture = asBool(value);
@@ -225,14 +269,18 @@ AppSettings LoadSettings() {
             ApplyTonemapKey(s.tonemap, key, value);
         }
     }
-    if (!sawSnapshotJxr) s.snapshot.jxr = legacyJxr;
+    if (!sawSnapshotJxr) {
+        s.snapshot.jxr = legacyJxr;
+    }
     return s;
 }
 
 void SaveSettings(const AppSettings& s) {
     SettingsFileLock lock;
     std::ofstream f(SettingsFilePath(), std::ios::trunc);
-    if (!f) return;
+    if (!f) {
+        return;
+    }
     f << "edit_on_capture = " << (s.editOnCapture ? "true" : "false") << "\n";
     f << "snapshot_png = " << (s.snapshot.png ? "true" : "false") << "\n";
     f << "snapshot_jxr = " << (s.snapshot.jxr ? "true" : "false") << "\n";
@@ -252,7 +300,9 @@ std::wstring NormalizePresetName(std::wstring name) {
     std::wstring out;
     out.reserve(name.size());
     for (wchar_t c : name) {
-        if (c < 32) continue;
+        if (c < 32) {
+            continue;
+        }
         switch (c) {
             case L'<': case L'>': case L':': case L'"':
             case L'/': case L'\\': case L'|': case L'?': case L'*':
@@ -263,7 +313,9 @@ std::wstring NormalizePresetName(std::wstring name) {
     while (!out.empty() && (out.back() == L' ' || out.back() == L'.')) {
         out.pop_back();
     }
-    while (!out.empty() && out.front() == L' ') out.erase(out.begin());
+    while (!out.empty() && out.front() == L' ') {
+        out.erase(out.begin());
+    }
     return out;
 }
 
@@ -271,11 +323,17 @@ std::vector<std::wstring> ListPresets() {
     std::vector<std::wstring> names;
     std::error_code ec;
     std::filesystem::directory_iterator it(PresetsDir(), ec);
-    if (ec) return names;
+    if (ec) {
+        return names;
+    }
     for (const auto& entry : it) {
-        if (!entry.is_regular_file()) continue;
+        if (!entry.is_regular_file()) {
+            continue;
+        }
         const auto& p = entry.path();
-        if (p.extension() != L".ini") continue;
+        if (p.extension() != L".ini") {
+            continue;
+        }
         names.push_back(p.stem().wstring());
     }
     std::sort(names.begin(), names.end(),
@@ -289,19 +347,27 @@ std::vector<std::wstring> ListPresets() {
 
 bool LoadPreset(const std::wstring& name, TonemapParams& out) {
     auto norm = NormalizePresetName(name);
-    if (norm.empty()) return false;
+    if (norm.empty()) {
+        return false;
+    }
     auto path = PresetsDir() / (norm + L".ini");
     std::ifstream f(path);
-    if (!f) return false;
+    if (!f) {
+        return false;
+    }
 
     out = TonemapParams{};
     std::string line;
     while (std::getline(f, line)) {
         auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == std::string::npos) {
+            continue;
+        }
         std::string key = Trim(line.substr(0, eq));
         std::string value = Trim(line.substr(eq + 1));
-        if (key.empty()) continue;
+        if (key.empty()) {
+            continue;
+        }
         ApplyTonemapKey(out, key, value);
     }
     return true;
@@ -309,16 +375,22 @@ bool LoadPreset(const std::wstring& name, TonemapParams& out) {
 
 void SavePreset(const std::wstring& name, const TonemapParams& params) {
     auto norm = NormalizePresetName(name);
-    if (norm.empty()) return;
+    if (norm.empty()) {
+        return;
+    }
     auto path = PresetsDir() / (norm + L".ini");
     std::ofstream f(path, std::ios::trunc);
-    if (!f) return;
+    if (!f) {
+        return;
+    }
     WriteTonemapParams(f, params);
 }
 
 void DeletePreset(const std::wstring& name) {
     auto norm = NormalizePresetName(name);
-    if (norm.empty()) return;
+    if (norm.empty()) {
+        return;
+    }
     auto path = PresetsDir() / (norm + L".ini");
     std::error_code ec;
     std::filesystem::remove(path, ec);

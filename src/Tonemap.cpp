@@ -201,7 +201,9 @@ float PqEotf(float E) {
 // the PQ value of the target peak (i.e. PQ(1.0) for an SDR display normalized
 // to its own peak).
 float Bt2390Knee(float E, float ks, float Lmax) {
-    if (E < ks) return E;
+    if (E < ks) {
+        return E;
+    }
     const float t = (E - ks) / std::max(1.0f - ks, 1e-6f);
     const float t2 = t * t;
     const float t3 = t2 * t;
@@ -253,7 +255,9 @@ void ApplyHighlightDesat(float& r, float& g, float& b,
     knee = std::clamp(knee, 0.05f, 0.95f);
     strength = std::clamp(strength, 0.0f, 1.0f);
     const float Y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-    if (Y <= knee) return;
+    if (Y <= knee) {
+        return;
+    }
     const float t = std::clamp((Y - knee) / std::max(1.0f - knee, 1e-6f),
                                0.0f, 1.0f);
     const float w = strength * (t * t * (3.0f - 2.0f * t));  // smoothstep
@@ -353,7 +357,9 @@ std::vector<uint8_t> TonemapToBgra8(const Frame& hdr,
         if (rolloff > 0.0f) {
             auto roll = [rolloff](float x) {
                 constexpr float knee = 0.7f;
-                if (x <= knee) return x;
+                if (x <= knee) {
+                    return x;
+                }
                 return knee + (x - knee) * (1.0f - rolloff);
             };
             r = roll(r); g = roll(g); b = roll(b);
@@ -462,10 +468,18 @@ std::vector<uint8_t> TonemapToBgra8(const Frame& hdr,
                     readLinear(yy, xx, rr, gg, bb);
                     rs += rr; gs += gg; bs += bb; ++count;
                 };
-                if (y > 0) acc(y - 1, x);
-                if (y + 1 < hdr.height) acc(y + 1, x);
-                if (x > 0) acc(y, x - 1);
-                if (x + 1 < hdr.width) acc(y, x + 1);
+                if (y > 0) {
+                    acc(y - 1, x);
+                }
+                if (y + 1 < hdr.height) {
+                    acc(y + 1, x);
+                }
+                if (x > 0) {
+                    acc(y, x - 1);
+                }
+                if (x + 1 < hdr.width) {
+                    acc(y, x + 1);
+                }
                 if (count > 0) {
                     const float inv = 1.0f / float(count);
                     const float amt = sharp * 2.0f;
@@ -507,10 +521,12 @@ std::vector<uint8_t> TonemapToBgra8(const Frame& hdr,
 }
 
 float AutoSdrWhite(const Frame& hdr) {
-    if (!hdr.isHdr) return 80.0f;
+    if (!hdr.isHdr) {
+        return 80.0f;
+    }
 
     // Build a 256-bin histogram of luminance in scRGB units (1.0 = 80 nits)
-    // and return the 99th-percentile bin centre scaled to nits.
+    // and return the 99th-percentile bin center scaled to nits.
     constexpr int kBins = 256;
     constexpr float kMaxScRgb = 12.5f;  // ~1000 nits, covers most HDR content
     int hist[kBins] = {};

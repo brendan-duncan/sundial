@@ -36,7 +36,9 @@ namespace sundial {
 namespace {
 
 void ThrowIfFailed(HRESULT hr, const char* what) {
-    if (FAILED(hr)) throw std::system_error(hr, std::system_category(), what);
+    if (FAILED(hr)) {
+        throw std::system_error(hr, std::system_category(), what);
+    }
 }
 
 ComPtr<IWICImagingFactory> CreateWic() {
@@ -178,7 +180,9 @@ void SavePngTonemapped(const Frame& f,
 namespace {
 
 void ThrowIfUhdrFailed(const uhdr_error_info_t& e, const char* what) {
-    if (e.error_code == UHDR_CODEC_OK) return;
+    if (e.error_code == UHDR_CODEC_OK) {
+        return;
+    }
     std::string msg = what;
     if (e.has_detail) {
         msg += ": ";
@@ -190,14 +194,18 @@ void ThrowIfUhdrFailed(const uhdr_error_info_t& e, const char* what) {
 struct UhdrEncoder {
     uhdr_codec_private_t* p = uhdr_create_encoder();
     ~UhdrEncoder() {
-        if (p) uhdr_release_encoder(p);
+        if (p) {
+            uhdr_release_encoder(p);
+        }
     }
 };
 
 struct UhdrDecoder {
     uhdr_codec_private_t* p = uhdr_create_decoder();
     ~UhdrDecoder() {
-        if (p) uhdr_release_decoder(p);
+        if (p) {
+            uhdr_release_decoder(p);
+        }
     }
 };
 
@@ -260,7 +268,9 @@ void SaveUltraHdrJpeg(const Frame& f,
     }
 
     UhdrEncoder enc;
-    if (!enc.p) throw std::runtime_error("uhdr_create_encoder failed");
+    if (!enc.p) {
+        throw std::runtime_error("uhdr_create_encoder failed");
+    }
 
     uhdr_raw_image_t hdr{};
     hdr.fmt = UHDR_IMG_FMT_64bppRGBAHalfFloat;
@@ -323,19 +333,27 @@ bool TryLoadUltraHdrFrame(const std::wstring& path, Frame& out) {
 
     std::ifstream f(std::filesystem::path(path),
                     std::ios::binary | std::ios::ate);
-    if (!f) return false;
+    if (!f) {
+        return false;
+    }
     const std::streamsize sz = f.tellg();
-    if (sz <= 0) return false;
+    if (sz <= 0) {
+        return false;
+    }
     f.seekg(0);
     std::vector<uint8_t> bytes(static_cast<size_t>(sz));
-    if (!f.read(reinterpret_cast<char*>(bytes.data()), sz)) return false;
+    if (!f.read(reinterpret_cast<char*>(bytes.data()), sz)) {
+        return false;
+    }
 
     if (!is_uhdr_image(bytes.data(), static_cast<int>(bytes.size()))) {
         return false;  // not an Ultra HDR file - let WIC handle it
     }
 
     UhdrDecoder dec;
-    if (!dec.p) return false;
+    if (!dec.p) {
+        return false;
+    }
 
     uhdr_compressed_image_t in{};
     in.data = bytes.data();
@@ -345,26 +363,36 @@ bool TryLoadUltraHdrFrame(const std::wstring& path, Frame& out) {
     in.ct = UHDR_CT_UNSPECIFIED;
     in.range = UHDR_CR_UNSPECIFIED;
 
-    if (uhdr_dec_set_image(dec.p, &in).error_code) return false;
+    if (uhdr_dec_set_image(dec.p, &in).error_code) {
+        return false;
+    }
     if (uhdr_dec_set_out_img_format(dec.p, UHDR_IMG_FMT_64bppRGBAHalfFloat)
-            .error_code)
+            .error_code) {
         return false;
-    if (uhdr_dec_set_out_color_transfer(dec.p, UHDR_CT_LINEAR).error_code)
+    }
+    if (uhdr_dec_set_out_color_transfer(dec.p, UHDR_CT_LINEAR).error_code) {
         return false;
+    }
     // Large display boost so the full recorded gain map is applied (it's
     // internally clamped to the gain map's own max boost), recovering the HDR.
     uhdr_dec_set_out_max_display_boost(dec.p, 10000.0f);
-    if (uhdr_dec_probe(dec.p).error_code) return false;
-    if (uhdr_decode(dec.p).error_code) return false;
+    if (uhdr_dec_probe(dec.p).error_code) {
+        return false;
+    }
+    if (uhdr_decode(dec.p).error_code) {
+        return false;
+    }
 
     uhdr_raw_image_t* img = uhdr_get_decoded_image(dec.p);
-    if (!img || !img->planes[UHDR_PLANE_PACKED]) return false;
+    if (!img || !img->planes[UHDR_PLANE_PACKED]) {
+        return false;
+    }
 
     // scRGB is linear Rec.709. In practice libultrahdr decodes the HDR back into
     // Rec.709 already (cg comes back UHDR_CG_BT_709), so the common case is a
     // straight copy; we still convert if it ever hands back a wider gamut. An
     // unspecified gamut is treated as Rec.709 (identity), matching observed
-    // decoder behaviour - assuming a wider gamut there would distort colors.
+    // decoder behavior - assuming a wider gamut there would distort colors.
     const bool from2020 = img->cg == UHDR_CG_BT_2100;
     const bool fromP3 = img->cg == UHDR_CG_DISPLAY_P3;
 
@@ -421,7 +449,9 @@ void SaveUltraHdrJpeg(const Frame&, const TonemapParams&,
 namespace {
 
 void ThrowIfAvifFailed(avifResult r, const char* what) {
-    if (r == AVIF_RESULT_OK) return;
+    if (r == AVIF_RESULT_OK) {
+        return;
+    }
     std::string msg = what;
     msg += ": ";
     msg += avifResultToString(r);
@@ -449,7 +479,9 @@ float PqEotf(float e) {  // PQ signal [0,1] -> linear [0,1]
 float HlgInvOetf(float e) {
     constexpr float a = 0.17883277f, b = 0.28466892f, c = 0.55991073f;
     e = std::max(0.0f, e);
-    if (e <= 0.5f) return (e * e) / 3.0f;
+    if (e <= 0.5f) {
+        return (e * e) / 3.0f;
+    }
     return (std::exp((e - c) / a) + b) / 12.0f;
 }
 
@@ -524,7 +556,9 @@ void WriteAvifToFile(const avifRWData& output, const std::wstring& path) {
                    static_cast<std::streamsize>(output.size));
         ok = static_cast<bool>(file);
     }
-    if (!ok) throw std::runtime_error("failed writing AVIF output");
+    if (!ok) {
+        throw std::runtime_error("failed writing AVIF output");
+    }
 }
 
 }  // namespace
@@ -543,7 +577,9 @@ void SaveAvifHdr(const Frame& f, const TonemapParams& params,
     const std::vector<float> hdr709 = BuildNormalizedHdrLinear709(f, params);
 
     AvifEncoderPtr enc;
-    if (!enc.p) throw std::runtime_error("avifEncoderCreate failed");
+    if (!enc.p) {
+        throw std::runtime_error("avifEncoderCreate failed");
+    }
     enc.p->maxThreads = 4;
     enc.p->speed = 6;     // still-image speed/size tradeoff (aom: 0 slow..10 fast)
     enc.p->quality = 90;  // near-visually-lossless base
@@ -556,7 +592,9 @@ void SaveAvifHdr(const Frame& f, const TonemapParams& params,
         // rendition to Rec.2020, scale to absolute PQ luminance (SDR white ==
         // sdrWhiteNits), PQ-encode, and quantize to 10-bit full range.
         image.p = avifImageCreate(W, H, 10, AVIF_PIXEL_FORMAT_YUV444);
-        if (!image.p) throw std::runtime_error("avifImageCreate failed");
+        if (!image.p) {
+            throw std::runtime_error("avifImageCreate failed");
+        }
         image.p->colorPrimaries = AVIF_COLOR_PRIMARIES_BT2020;
         image.p->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_PQ;
         image.p->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT2020_NCL;
@@ -608,7 +646,9 @@ void SaveAvifHdr(const Frame& f, const TonemapParams& params,
         std::vector<uint8_t> sdrBgra = TonemapToBgra8(f, params);
 
         image.p = avifImageCreate(W, H, 8, AVIF_PIXEL_FORMAT_YUV444);
-        if (!image.p) throw std::runtime_error("avifImageCreate failed");
+        if (!image.p) {
+            throw std::runtime_error("avifImageCreate failed");
+        }
         image.p->colorPrimaries = AVIF_COLOR_PRIMARIES_BT709;
         image.p->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
         image.p->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT709;
@@ -663,7 +703,9 @@ void SaveAvifHdr(const Frame& f, const TonemapParams& params,
         }
 
         avifGainMap* gainMap = avifGainMapCreate();
-        if (!gainMap) throw std::runtime_error("avifGainMapCreate failed");
+        if (!gainMap) {
+            throw std::runtime_error("avifGainMapCreate failed");
+        }
         const avifResult gr = avifRGBImageComputeGainMap(
             &baseRgb.img, AVIF_COLOR_PRIMARIES_BT709,
             AVIF_TRANSFER_CHARACTERISTICS_SRGB, &altRgb.img,
@@ -699,29 +741,48 @@ bool TryLoadAvifFrame(const std::wstring& path, Frame& out) {
 
     std::ifstream f(std::filesystem::path(path),
                     std::ios::binary | std::ios::ate);
-    if (!f) return false;
+    if (!f) {
+        return false;
+    }
     const std::streamsize sz = f.tellg();
-    if (sz <= 0) return false;
+    if (sz <= 0) {
+        return false;
+    }
     f.seekg(0);
     std::vector<uint8_t> bytes(static_cast<size_t>(sz));
-    if (!f.read(reinterpret_cast<char*>(bytes.data()), sz)) return false;
+    if (!f.read(reinterpret_cast<char*>(bytes.data()), sz)) {
+        return false;
+    }
 
     avifROData ro{bytes.data(), bytes.size()};
-    if (!avifPeekCompatibleFileType(&ro)) return false;  // not AVIF -> WIC
+    if (!avifPeekCompatibleFileType(&ro)) {
+        return false;  // not AVIF -> WIC
+    }
 
     AvifDecoderPtr dec;
-    if (!dec.p) return false;
+    if (!dec.p) {
+        return false;
+    }
     dec.p->maxThreads = 4;
     dec.p->imageContentToDecode = AVIF_IMAGE_CONTENT_ALL;  // include gain map
     if (avifDecoderSetIOMemory(dec.p, bytes.data(), bytes.size()) !=
-        AVIF_RESULT_OK)
+        AVIF_RESULT_OK) {
         return false;
-    if (avifDecoderParse(dec.p) != AVIF_RESULT_OK) return false;
-    if (avifDecoderNextImage(dec.p) != AVIF_RESULT_OK) return false;
+    }
+    if (avifDecoderParse(dec.p) != AVIF_RESULT_OK) {
+        return false;
+    }
+    if (avifDecoderNextImage(dec.p) != AVIF_RESULT_OK) {
+        return false;
+    }
     avifImage* img = dec.p->image;
-    if (!img) return false;
+    if (!img) {
+        return false;
+    }
     const uint32_t W = img->width, H = img->height;
-    if (W == 0 || H == 0) return false;
+    if (W == 0 || H == 0) {
+        return false;
+    }
 
     const bool hasGainMap = img->gainMap && img->gainMap->image;
 
@@ -734,8 +795,9 @@ bool TryLoadAvifFrame(const std::wstring& path, Frame& out) {
         rgb.img.depth = 16;
         rgb.img.format = AVIF_RGB_FORMAT_RGBA;
         rgb.img.isFloat = AVIF_TRUE;
-        if (avifRGBImageAllocatePixels(&rgb.img) != AVIF_RESULT_OK)
+        if (avifRGBImageAllocatePixels(&rgb.img) != AVIF_RESULT_OK) {
             return false;
+        }
         rgb.allocated = true;
         avifContentLightLevelInformationBox clli{};
         if (avifImageApplyGainMap(img, img->gainMap, /*hdrHeadroom=*/14.0f,
@@ -782,10 +844,13 @@ bool TryLoadAvifFrame(const std::wstring& path, Frame& out) {
         rgb.img.format = AVIF_RGB_FORMAT_RGBA;
         rgb.img.depth = 16;
         rgb.img.isFloat = AVIF_TRUE;
-        if (avifRGBImageAllocatePixels(&rgb.img) != AVIF_RESULT_OK)
+        if (avifRGBImageAllocatePixels(&rgb.img) != AVIF_RESULT_OK) {
             return false;
+        }
         rgb.allocated = true;
-        if (avifImageYUVToRGB(img, &rgb.img) != AVIF_RESULT_OK) return false;
+        if (avifImageYUVToRGB(img, &rgb.img) != AVIF_RESULT_OK) {
+            return false;
+        }
 
         const bool from2020 =
             img->colorPrimaries == AVIF_COLOR_PRIMARIES_BT2020;
@@ -832,9 +897,13 @@ bool TryLoadAvifFrame(const std::wstring& path, Frame& out) {
     avifRGBImageSetDefaults(&rgb.img, img);
     rgb.img.format = AVIF_RGB_FORMAT_BGRA;
     rgb.img.depth = 8;
-    if (avifRGBImageAllocatePixels(&rgb.img) != AVIF_RESULT_OK) return false;
+    if (avifRGBImageAllocatePixels(&rgb.img) != AVIF_RESULT_OK) {
+        return false;
+    }
     rgb.allocated = true;
-    if (avifImageYUVToRGB(img, &rgb.img) != AVIF_RESULT_OK) return false;
+    if (avifImageYUVToRGB(img, &rgb.img) != AVIF_RESULT_OK) {
+        return false;
+    }
     out.width = W;
     out.height = H;
     out.isHdr = false;
@@ -863,7 +932,9 @@ Frame LoadFrameFromFile(const std::wstring& path) {
     // editor re-opens them as HDR. WIC would only see the SDR base image.
     {
         Frame uhdr;
-        if (TryLoadUltraHdrFrame(path, uhdr)) return uhdr;
+        if (TryLoadUltraHdrFrame(path, uhdr)) {
+            return uhdr;
+        }
     }
 #endif
 
@@ -873,7 +944,9 @@ Frame LoadFrameFromFile(const std::wstring& path) {
     // even then would never recover a gain map's HDR.
     {
         Frame avif;
-        if (TryLoadAvifFrame(path, avif)) return avif;
+        if (TryLoadAvifFrame(path, avif)) {
+            return avif;
+        }
     }
 #endif
 

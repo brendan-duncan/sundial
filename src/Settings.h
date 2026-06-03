@@ -81,7 +81,7 @@ struct TonemapParams {
 };
 
 // How HDR is represented inside an exported AVIF. Pq encodes the HDR signal
-// natively as 10-bit Rec.2020 PQ (the common, widely-recognised form of "HDR
+// natively as 10-bit Rec.2020 PQ (the common, widely-recognized form of "HDR
 // AVIF"); GainMap writes an SDR base image plus an embedded gain map (ISO
 // 21496-1), so SDR viewers see the tonemapped base and HDR-aware viewers
 // recover the HDR - the same idea as Ultra HDR JPEG.

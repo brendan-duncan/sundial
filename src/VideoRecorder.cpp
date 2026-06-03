@@ -31,7 +31,9 @@ struct RecorderError {
     std::string what;
 };
 void Thr(HRESULT hr, const char* what) {
-    if (FAILED(hr)) throw RecorderError{what};
+    if (FAILED(hr)) {
+        throw RecorderError{what};
+    }
 }
 
 // Compact primary-output finder, mirroring HdrCapture's GetPrimaryOutput6().
@@ -45,18 +47,24 @@ ComPtr<IDXGIOutput6> GetPrimaryOutput6(ComPtr<IDXGIAdapter1>& outAdapter) {
     for (UINT a = 0;; ++a) {
         ComPtr<IDXGIAdapter1> adapter;
         HRESULT hr = factory->EnumAdapters1(a, &adapter);
-        if (hr == DXGI_ERROR_NOT_FOUND) break;
+        if (hr == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
         Thr(hr, "EnumAdapters1");
 
         for (UINT o = 0;; ++o) {
             ComPtr<IDXGIOutput> output;
             hr = adapter->EnumOutputs(o, &output);
-            if (hr == DXGI_ERROR_NOT_FOUND) break;
+            if (hr == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
             Thr(hr, "EnumOutputs");
 
             DXGI_OUTPUT_DESC desc{};
             Thr(output->GetDesc(&desc), "Output GetDesc");
-            if (!desc.AttachedToDesktop) continue;
+            if (!desc.AttachedToDesktop) {
+                continue;
+            }
 
             MONITORINFO mi{};
             mi.cbSize = sizeof(mi);
@@ -75,21 +83,27 @@ ComPtr<IDXGIOutput6> GetPrimaryOutput6(ComPtr<IDXGIAdapter1>& outAdapter) {
 float QuerySdrWhiteLevelNits(const wchar_t* gdiName) {
     UINT32 pathCount = 0, modeCount = 0;
     if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount,
-                                    &modeCount) != ERROR_SUCCESS)
+                                    &modeCount) != ERROR_SUCCESS) {
         return 0.0f;
+    }
     std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
     std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
     if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(),
-                           &modeCount, modes.data(), nullptr) != ERROR_SUCCESS)
+                           &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) {
         return 0.0f;
+    }
     for (UINT32 i = 0; i < pathCount; ++i) {
         DISPLAYCONFIG_SOURCE_DEVICE_NAME src{};
         src.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
         src.header.size = sizeof(src);
         src.header.adapterId = paths[i].sourceInfo.adapterId;
         src.header.id = paths[i].sourceInfo.id;
-        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) continue;
-        if (wcscmp(src.viewGdiDeviceName, gdiName) != 0) continue;
+        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) {
+            continue;
+        }
+        if (wcscmp(src.viewGdiDeviceName, gdiName) != 0) {
+            continue;
+        }
         struct LocalSdrWhiteLevel {
             DISPLAYCONFIG_DEVICE_INFO_HEADER header;
             ULONG SDRWhiteLevel;
@@ -101,8 +115,9 @@ float QuerySdrWhiteLevelNits(const wchar_t* gdiName) {
         wl.header.size = sizeof(wl);
         wl.header.adapterId = paths[i].targetInfo.adapterId;
         wl.header.id = paths[i].targetInfo.id;
-        if (DisplayConfigGetDeviceInfo(&wl.header) != ERROR_SUCCESS)
+        if (DisplayConfigGetDeviceInfo(&wl.header) != ERROR_SUCCESS) {
             return 0.0f;
+        }
         return wl.SDRWhiteLevel * 80.0f / 1000.0f;
     }
     return 0.0f;
@@ -239,7 +254,9 @@ struct MfRuntime {
     bool ok = false;
     MfRuntime() { ok = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)); }
     ~MfRuntime() {
-        if (ok) MFShutdown();
+        if (ok) {
+            MFShutdown();
+        }
     }
 };
 
@@ -251,7 +268,9 @@ VideoRecorder::~VideoRecorder() {
 
 bool VideoRecorder::Start(const RECT& region, const std::wstring& outputPath,
                           const AppSettings& settings, bool tonemapPreseeded) {
-    if (running_.load()) return false;
+    if (running_.load()) {
+        return false;
+    }
     error_.clear();
     stopRequested_.store(false);
     running_.store(true);
@@ -262,7 +281,9 @@ bool VideoRecorder::Start(const RECT& region, const std::wstring& outputPath,
 
 bool VideoRecorder::Stop() {
     stopRequested_.store(true);
-    if (worker_.joinable()) worker_.join();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
     running_.store(false);
     return error_.empty();
 }
@@ -282,7 +303,9 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
     bool finalized = false;
 
     try {
-        if (!mf.ok) throw RecorderError{"MFStartup failed"};
+        if (!mf.ok) {
+            throw RecorderError{"MFStartup failed"};
+        }
 
         ComPtr<IDXGIAdapter1> adapter;
         ComPtr<IDXGIOutput6> output6 = GetPrimaryOutput6(adapter);
@@ -321,12 +344,20 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
                 resource.Reset();
             }
             hr = dup->AcquireNextFrame(100, &fi, &resource);
-            if (hr == DXGI_ERROR_WAIT_TIMEOUT) continue;
+            if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+                continue;
+            }
             Thr(hr, "AcquireNextFrame(initial)");
-            if (fi.LastPresentTime.QuadPart != 0) break;
-            if (attempt >= 4) break;
+            if (fi.LastPresentTime.QuadPart != 0) {
+                break;
+            }
+            if (attempt >= 4) {
+                break;
+            }
         }
-        if (!resource) throw RecorderError{"Timed out waiting for first frame"};
+        if (!resource) {
+            throw RecorderError{"Timed out waiting for first frame"};
+        }
 
         ComPtr<ID3D11Texture2D> srcTex;
         Thr(resource.As(&srcTex), "QueryInterface ID3D11Texture2D");
@@ -346,9 +377,12 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
         rb = std::min<LONG>(rb, LONG(srcDesc.Height));
         uint32_t rw = uint32_t(std::max<LONG>(2, rr - rx)) & ~1u;
         uint32_t rh = uint32_t(std::max<LONG>(2, rb - ry)) & ~1u;
-        if (rx + LONG(rw) > LONG(srcDesc.Width)) rw = (srcDesc.Width - rx) & ~1u;
-        if (ry + LONG(rh) > LONG(srcDesc.Height))
+        if (rx + LONG(rw) > LONG(srcDesc.Width)) {
+            rw = (srcDesc.Width - rx) & ~1u;
+        }
+        if (ry + LONG(rh) > LONG(srcDesc.Height)) {
             rh = (srcDesc.Height - ry) & ~1u;
+        }
 
         TonemapParams tm = settings.tonemap;
         if (tonemapPreseeded) {
@@ -390,10 +424,12 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
 
         ShaderTonemap tonemap;
         if (!tonemap.Initialize(device.Get(), context.Get(),
-                                /*linearHdrOutput=*/false))
+                                /*linearHdrOutput=*/false)) {
             throw RecorderError{"Tonemap shader failed to compile"};
-        if (!tonemap.ResizeTarget(rw, rh))
+        }
+        if (!tonemap.ResizeTarget(rw, rh)) {
             throw RecorderError{"Tonemap target alloc failed"};
+        }
 
         mp4.Open(outputPath, rw, rh, kFps);
 
@@ -412,8 +448,9 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
             tonemap.RenderSdr(tm);
             context->CopyResource(stageTex.Get(), tonemap.SdrTexture());
             D3D11_MAPPED_SUBRESOURCE m{};
-            if (FAILED(context->Map(stageTex.Get(), 0, D3D11_MAP_READ, 0, &m)))
+            if (FAILED(context->Map(stageTex.Get(), 0, D3D11_MAP_READ, 0, &m))) {
                 return;
+            }
             const uint8_t* s = static_cast<const uint8_t*>(m.pData);
             for (uint32_t y = 0; y < rh; ++y) {
                 const uint8_t* sr = s + size_t(y) * m.RowPitch;
@@ -442,7 +479,9 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
             hr = dup->AcquireNextFrame(15, &fi, &resource);
             if (SUCCEEDED(hr)) {
                 ComPtr<ID3D11Texture2D> t;
-                if (SUCCEEDED(resource.As(&t))) renderCurrent(t.Get());
+                if (SUCCEEDED(resource.As(&t))) {
+                    renderCurrent(t.Get());
+                }
                 dup->ReleaseFrame();
                 resource.Reset();
             } else if (hr == DXGI_ERROR_ACCESS_LOST) {
@@ -485,7 +524,9 @@ void VideoRecorder::Run(RECT region, std::wstring outputPath,
     }
 
     running_.store(false);
-    if (comInit) CoUninitialize();
+    if (comInit) {
+        CoUninitialize();
+    }
 }
 
 }  // namespace sundial

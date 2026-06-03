@@ -92,7 +92,9 @@ constexpr COLORREF kRecordRed = RGB(232, 17, 35);
 // Keep our overlay/control-bar chrome out of the recorded video. Harmless
 // (and a silent no-op) on Windows builds that predate the flag.
 void ExcludeFromCapture(HWND hwnd) {
-    if (hwnd) SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    if (hwnd) {
+        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    }
 }
 
 enum class VPhase {
@@ -290,7 +292,9 @@ RECT GetButtonRect(int id) {
 int HitTest(int x, int y) {
     for (int id : {kIdFullScreen, kIdRecord, kIdEditImage, kIdSettings}) {
         RECT r = GetButtonRect(id);
-        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return id;
+        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+            return id;
+        }
     }
     return 0;
 }
@@ -305,7 +309,9 @@ void CreateButtonTooltips(HWND owner, ToolbarState* s) {
                                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                                CW_USEDEFAULT, owner, nullptr,
                                GetModuleHandleW(nullptr), nullptr);
-    if (!tip) return;
+    if (!tip) {
+        return;
+    }
 
     struct Tip { int id; const wchar_t* text; };
     const Tip tips[] = {
@@ -356,7 +362,7 @@ void DrawToolbarNote(HDC hdc, const RECT& client) {
 }
 
 // Small, dim version label in the bottom-right corner of the mode-select
-// toolbar. The hint line above is centred and stops well short of the edges,
+// toolbar. The hint line above is centered and stops well short of the edges,
 // so a right-aligned badge here doesn't collide with it.
 void DrawVersionBadge(HDC hdc, const RECT& client) {
     HFONT font = CreateFontW(-11, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
@@ -396,9 +402,13 @@ int HitTestSelection(const RECT& sel, POINT p) {
     RECT handles[8];
     GetHandleRects(sel, handles);
     for (int i = 0; i < 8; ++i) {
-        if (PtInRect(&handles[i], p)) return i;
+        if (PtInRect(&handles[i], p)) {
+            return i;
+        }
     }
-    if (PtInRect(&sel, p)) return kHitMove;
+    if (PtInRect(&sel, p)) {
+        return kHitMove;
+    }
     return kHitNone;
 }
 
@@ -429,10 +439,18 @@ void ResizeSel(RECT& sel, int handle, POINT p, int monW, int monH) {
     const bool right = (handle == 2 || handle == 3 || handle == 4);
     const bool top = (handle == 0 || handle == 1 || handle == 2);
     const bool bottom = (handle == 4 || handle == 5 || handle == 6);
-    if (left) sel.left = std::min<LONG>(p.x, sel.right - kMinSel);
-    if (right) sel.right = std::max<LONG>(p.x, sel.left + kMinSel);
-    if (top) sel.top = std::min<LONG>(p.y, sel.bottom - kMinSel);
-    if (bottom) sel.bottom = std::max<LONG>(p.y, sel.top + kMinSel);
+    if (left) {
+        sel.left = std::min<LONG>(p.x, sel.right - kMinSel);
+    }
+    if (right) {
+        sel.right = std::max<LONG>(p.x, sel.left + kMinSel);
+    }
+    if (top) {
+        sel.top = std::min<LONG>(p.y, sel.bottom - kMinSel);
+    }
+    if (bottom) {
+        sel.bottom = std::max<LONG>(p.y, sel.top + kMinSel);
+    }
 }
 
 // ---- control bar (video mode) --------------------------------------------
@@ -441,8 +459,12 @@ void PositionControlBar(HWND bar, ToolbarState* s) {
     const int cx = (s->sel.left + s->sel.right) / 2;
     int x = std::clamp(cx - kCbW / 2, 0, std::max(0, s->monW - kCbW));
     int y = s->sel.bottom + 14;
-    if (y + kCbH > s->monH) y = s->sel.top - 14 - kCbH;
-    if (y < 0) y = std::clamp((s->monH - kCbH) / 2, 0, std::max(0, s->monH - kCbH));
+    if (y + kCbH > s->monH) {
+        y = s->sel.top - 14 - kCbH;
+    }
+    if (y < 0) {
+        y = std::clamp((s->monH - kCbH) / 2, 0, std::max(0, s->monH - kCbH));
+    }
     SetWindowPos(bar, HWND_TOPMOST, x + s->originX, y + s->originY, kCbW, kCbH,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
@@ -544,7 +566,9 @@ void PaintControlBar(HWND hwnd, ToolbarState* s) {
         }
         wchar_t timeBuf[16];
         FormatElapsed(timeBuf, 16, secs);
-        if (recording) SetTextColor(hdc, kRecordRed);
+        if (recording) {
+            SetTextColor(hdc, kRecordRed);
+        }
         RECT timeRc = {kCbPad * 2 + kCbBtnW, kCbPad, client.right - kCbPad,
                        client.bottom - kCbPad};
         DrawTextW(hdc, timeBuf, -1, &timeRc,
@@ -599,7 +623,9 @@ void BeginRecording(HWND bar, ToolbarState* s) {
                        .wstring() +
                    L".mp4";
 
-    if (s->dimHwnd) SetDimRecordingMode(s->dimHwnd);
+    if (s->dimHwnd) {
+        SetDimRecordingMode(s->dimHwnd);
+    }
 
     s->recorder = std::make_unique<VideoRecorder>();
     if (!s->recorder->Start(region, s->videoPath, *s->settings,
@@ -615,7 +641,9 @@ void BeginRecording(HWND bar, ToolbarState* s) {
     s->phase = VPhase::Recording;
     s->recordStartTick = GetTickCount64();
     SetTimer(bar, kTimerRecord, 250, nullptr);
-    if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    if (s->dimHwnd) {
+        InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    }
     InvalidateRect(bar, nullptr, FALSE);
 }
 
@@ -641,7 +669,9 @@ void StopAndFinish(HWND bar, ToolbarState* s) {
 // recording bakes it in. The chosen params are stored back into the live
 // settings; BeginRecording then hands them to the recorder verbatim.
 void OnAdjustLook(HWND bar, ToolbarState* s) {
-    if (s->phase != VPhase::Adjust) return;
+    if (s->phase != VPhase::Adjust) {
+        return;
+    }
 
     const RECT sel = s->sel;  // monitor-client coords == primary-monitor px
     const uint32_t w = uint32_t(std::max<LONG>(1, sel.right - sel.left));
@@ -664,10 +694,14 @@ void OnAdjustLook(HWND bar, ToolbarState* s) {
     // tune it. On a re-open we keep the look the user already dialed in rather
     // than reseeding the per-display anchors over their tweaks.
     AppSettings tmp = *s->settings;
-    if (!s->tonemapAdjusted) SeedTonemapForFrame(tmp.tonemap, snap);
+    if (!s->tonemapAdjusted) {
+        SeedTonemapForFrame(tmp.tonemap, snap);
+    }
 
     // Hide our topmost chrome so the editor isn't stuck behind it.
-    if (s->dimHwnd) ShowWindow(s->dimHwnd, SW_HIDE);
+    if (s->dimHwnd) {
+        ShowWindow(s->dimHwnd, SW_HIDE);
+    }
     ShowWindow(bar, SW_HIDE);
 
     EditorResult r = RunEditor(snap, tmp, L"", /*tonemapOnly=*/true);
@@ -687,7 +721,9 @@ void OnAdjustLook(HWND bar, ToolbarState* s) {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetForegroundWindow(bar);
     s->adjustHover = false;
-    if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    if (s->dimHwnd) {
+        InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    }
     InvalidateRect(bar, nullptr, FALSE);
 }
 
@@ -698,7 +734,9 @@ void OnControlButton(HWND bar, ToolbarState* s) {
             s->phase = VPhase::Countdown;
             s->countdown = 3;
             SetTimer(bar, kTimerCountdown, 1000, nullptr);
-            if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+            if (s->dimHwnd) {
+                InvalidateRect(s->dimHwnd, nullptr, FALSE);
+            }
             InvalidateRect(bar, nullptr, FALSE);
             break;
         case VPhase::Countdown:
@@ -706,7 +744,9 @@ void OnControlButton(HWND bar, ToolbarState* s) {
             KillTimer(bar, kTimerCountdown);
             s->phase = VPhase::Adjust;
             s->countdown = 0;
-            if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+            if (s->dimHwnd) {
+                InvalidateRect(s->dimHwnd, nullptr, FALSE);
+            }
             InvalidateRect(bar, nullptr, FALSE);
             break;
         case VPhase::Recording:
@@ -729,7 +769,9 @@ void EnterVideoMode(HWND hwnd, ToolbarState* s) {
     SetWindowPos(hwnd, HWND_TOPMOST, x, y, kHintW, kHintH,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(hwnd, nullptr, TRUE);
-    if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    if (s->dimHwnd) {
+        InvalidateRect(s->dimHwnd, nullptr, FALSE);
+    }
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
 }
@@ -781,7 +823,7 @@ void ShowSettingsMenu(HWND hwnd, ToolbarState* s) {
         AppendMenuW(menu, MF_STRING | (fmt.avif ? MF_CHECKED : MF_UNCHECKED),
                     kIdMenuFmtAvif, L"HDR AVIF / .avif (HDR)");
         // The two encodings are mutually exclusive; show them as a radio pair,
-        // greyed until AVIF is enabled.
+        // grayed until AVIF is enabled.
         const UINT avifModeFlags = fmt.avif ? MF_STRING : (MF_STRING | MF_GRAYED);
         AppendMenuW(menu,
                     avifModeFlags | (fmt.avifMode == AvifHdrMode::Pq
@@ -932,11 +974,15 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_TIMER: {
-            if (!s) return 0;
+            if (!s) {
+                return 0;
+            }
             if (wp == kTimerCountdown) {
                 s->countdown--;
                 if (s->countdown > 0) {
-                    if (s->dimHwnd) InvalidateRect(s->dimHwnd, nullptr, FALSE);
+                    if (s->dimHwnd) {
+                        InvalidateRect(s->dimHwnd, nullptr, FALSE);
+                    }
                 } else {
                     KillTimer(hwnd, kTimerCountdown);
                     BeginRecording(hwnd, s);
@@ -947,7 +993,9 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSEMOVE: {
-            if (!s) return 0;
+            if (!s) {
+                return 0;
+            }
             if (s->phase != VPhase::None && s->hasRect) {
                 POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                 RECT btn = ControlBarButtonRect();
@@ -983,7 +1031,9 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_LBUTTONUP: {
-            if (!s) return 0;
+            if (!s) {
+                return 0;
+            }
             if (s->phase != VPhase::None) {
                 if (s->hasRect) {
                     POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -1032,7 +1082,9 @@ LRESULT CALLBACK ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
-            if (s) DestroyButtonTooltips(s);
+            if (s) {
+                DestroyButtonTooltips(s);
+            }
             PostQuitMessage(0);
             return 0;
     }
@@ -1216,7 +1268,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         case WM_LBUTTONDOWN: {
-            if (!d) return 0;
+            if (!d) {
+                return 0;
+            }
             POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             d->dragging = true;
             d->dragMoved = false;
@@ -1238,13 +1292,17 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSEMOVE: {
-            if (!d || !d->dragging) return 0;
+            if (!d || !d->dragging) {
+                return 0;
+            }
             POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             d->current = p;
             if (!d->dragMoved) {
                 const int dx = p.x - d->anchor.x;
                 const int dy = p.y - d->anchor.y;
-                if (dx * dx + dy * dy >= 16) d->dragMoved = true;
+                if (dx * dx + dy * dy >= 16) {
+                    d->dragMoved = true;
+                }
             }
             if (video) {
                 if (d->activeHandle == kHitMove) {
@@ -1253,11 +1311,18 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     RECT r = d->startRect;
                     OffsetRect(&r, dx, dy);
                     // Keep fully on-screen while moving.
-                    if (r.left < 0) OffsetRect(&r, -r.left, 0);
-                    if (r.top < 0) OffsetRect(&r, 0, -r.top);
-                    if (r.right > s->monW) OffsetRect(&r, s->monW - r.right, 0);
-                    if (r.bottom > s->monH)
+                    if (r.left < 0) {
+                        OffsetRect(&r, -r.left, 0);
+                    }
+                    if (r.top < 0) {
+                        OffsetRect(&r, 0, -r.top);
+                    }
+                    if (r.right > s->monW) {
+                        OffsetRect(&r, s->monW - r.right, 0);
+                    }
+                    if (r.bottom > s->monH) {
                         OffsetRect(&r, 0, s->monH - r.bottom);
+                    }
                     s->sel = r;
                 } else if (d->activeHandle >= 0 && d->activeHandle < 8) {
                     s->sel = d->startRect;
@@ -1270,7 +1335,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         // live preview only; committed on button up
                     }
                 }
-                if (d->toolbar && s->hasRect) PositionControlBar(d->toolbar, s);
+                if (d->toolbar && s->hasRect) {
+                    PositionControlBar(d->toolbar, s);
+                }
                 InvalidateRect(hwnd, nullptr, FALSE);
             } else if (d->dragMoved) {
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -1278,7 +1345,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONUP: {
-            if (!d || !d->dragging) return 0;
+            if (!d || !d->dragging) {
+                return 0;
+            }
             d->dragging = false;
             ReleaseCapture();
 
@@ -1293,7 +1362,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         InvalidateRect(hwnd, nullptr, FALSE);
                     } else {
                         // trivial click in pick mode => cancel everything
-                        if (d->toolbar) PostMessageW(d->toolbar, WM_CLOSE, 0, 0);
+                        if (d->toolbar) {
+                            PostMessageW(d->toolbar, WM_CLOSE, 0, 0);
+                        }
                     }
                 } else if (s->phase == VPhase::Adjust) {
                     // Re-select that ended up too small: revert to prior rect.
@@ -1302,7 +1373,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                          (s->sel.bottom - s->sel.top) < kMinSel)) {
                         s->sel = d->startRect;
                     }
-                    if (d->toolbar) PositionControlBar(d->toolbar, s);
+                    if (d->toolbar) {
+                        PositionControlBar(d->toolbar, s);
+                    }
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 d->activeHandle = kHitNone;
@@ -1317,12 +1390,16 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     d->toolbarState->area = r;
                 }
             }
-            if (d->toolbar) PostMessageW(d->toolbar, WM_CLOSE, 0, 0);
+            if (d->toolbar) {
+                PostMessageW(d->toolbar, WM_CLOSE, 0, 0);
+            }
             return 0;
         }
         case WM_RBUTTONUP:
             // Right-click cancels (in adjust it also just cancels the flow).
-            if (d && d->toolbar) PostMessageW(d->toolbar, WM_CLOSE, 0, 0);
+            if (d && d->toolbar) {
+                PostMessageW(d->toolbar, WM_CLOSE, 0, 0);
+            }
             return 0;
         case WM_KEYDOWN:
             if (wp == VK_ESCAPE && d && d->toolbar) {
@@ -1330,7 +1407,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_PAINT:
-            if (d) PaintDim(hwnd, *d);
+            if (d) {
+                PaintDim(hwnd, *d);
+            }
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1338,7 +1417,9 @@ LRESULT CALLBACK DimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 void EnsureDimClassRegistered() {
     static bool registered = false;
-    if (registered) return;
+    if (registered) {
+        return;
+    }
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DimWndProc;
@@ -1366,7 +1447,9 @@ HWND CreateDimOverlay(DimState* state) {
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kDimClassName, nullptr, WS_POPUP, x, y, w, h, nullptr, nullptr,
         GetModuleHandleW(nullptr), state);
-    if (!dim) return nullptr;
+    if (!dim) {
+        return nullptr;
+    }
     SetLayeredWindowAttributes(dim, RGB(255, 0, 255), 110,
                                LWA_COLORKEY | LWA_ALPHA);
     // The recording border lives on this window; never let it into the video.
@@ -1377,7 +1460,9 @@ HWND CreateDimOverlay(DimState* state) {
 
 void EnsureClassRegistered() {
     static bool registered = false;
-    if (registered) return;
+    if (registered) {
+        return;
+    }
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);  // registers the tooltip window class
     HICON appIcon = LoadIconW(GetModuleHandleW(nullptr),
@@ -1425,7 +1510,9 @@ ToolbarResult ShowToolbar(AppSettings& settings) {
         WS_POPUP | WS_BORDER, x, y, kToolbarW, kToolbarH, nullptr, nullptr,
         GetModuleHandleW(nullptr), &state);
     if (!hwnd) {
-        if (dim) DestroyWindow(dim);
+        if (dim) {
+            DestroyWindow(dim);
+        }
         return ToolbarResult{};
     }
     // The Start/Stop control bar can sit over the selection (e.g. a tall
@@ -1452,8 +1539,12 @@ ToolbarResult ShowToolbar(AppSettings& settings) {
     }
 
     // Ensure any in-flight recording is stopped before we tear down.
-    if (state.recorder) state.recorder->Stop();
-    if (dim) DestroyWindow(dim);
+    if (state.recorder) {
+        state.recorder->Stop();
+    }
+    if (dim) {
+        DestroyWindow(dim);
+    }
 
     ToolbarResult result;
     result.kind = state.kind;

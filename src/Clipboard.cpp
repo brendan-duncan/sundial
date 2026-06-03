@@ -13,7 +13,9 @@ namespace {
 template <typename HeaderT>
 HGLOBAL MakeDib(const HeaderT& header, const std::vector<uint8_t>& bgra) {
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, sizeof(HeaderT) + bgra.size());
-    if (!hMem) return nullptr;
+    if (!hMem) {
+        return nullptr;
+    }
     auto* dst = static_cast<uint8_t*>(GlobalLock(hMem));
     std::memcpy(dst, &header, sizeof(HeaderT));
     std::memcpy(dst + sizeof(HeaderT), bgra.data(), bgra.size());
@@ -23,9 +25,13 @@ HGLOBAL MakeDib(const HeaderT& header, const std::vector<uint8_t>& bgra) {
 
 // Copy a byte blob into a movable HGLOBAL. Returns nullptr on failure.
 HGLOBAL MakeBlob(const std::vector<uint8_t>& bytes) {
-    if (bytes.empty()) return nullptr;
+    if (bytes.empty()) {
+        return nullptr;
+    }
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
-    if (!hMem) return nullptr;
+    if (!hMem) {
+        return nullptr;
+    }
     void* dst = GlobalLock(hMem);
     std::memcpy(dst, bytes.data(), bytes.size());
     GlobalUnlock(hMem);
@@ -38,11 +44,15 @@ HGLOBAL MakeBlob(const std::vector<uint8_t>& bytes) {
 void SetPngFormat(const std::vector<uint8_t>& bgra, uint32_t width,
                   uint32_t height) {
     static const UINT cfPng = RegisterClipboardFormatW(L"PNG");
-    if (!cfPng) return;
+    if (!cfPng) {
+        return;
+    }
     try {
         std::vector<uint8_t> png = EncodePngToMemory(bgra.data(), width, height);
         if (HGLOBAL hPng = MakeBlob(png)) {
-            if (!SetClipboardData(cfPng, hPng)) GlobalFree(hPng);
+            if (!SetClipboardData(cfPng, hPng)) {
+                GlobalFree(hPng);
+            }
         }
     } catch (...) {
         // Leave the DIB formats as the result.
@@ -53,15 +63,21 @@ void SetPngFormat(const std::vector<uint8_t>& bgra, uint32_t width,
 
 bool CopyBgra8ToClipboard(std::vector<uint8_t> bgra, uint32_t width,
                           uint32_t height, HWND owner) {
-    if (bgra.size() < size_t(width) * height * 4) return false;
+    if (bgra.size() < size_t(width) * height * 4) {
+        return false;
+    }
 
     // DXGI Desktop Duplication hands back BGRA8 with the alpha channel left at
     // 0; the tonemap path writes 255. Force opaque either way - a DIB with a
     // zero alpha channel pastes as fully transparent (i.e. "nothing") in apps
     // that honor it, which is the classic "copy didn't work" symptom.
-    for (size_t i = 3; i < bgra.size(); i += 4) bgra[i] = 0xFF;
+    for (size_t i = 3; i < bgra.size(); i += 4) {
+        bgra[i] = 0xFF;
+    }
 
-    if (!OpenClipboard(owner)) return false;
+    if (!OpenClipboard(owner)) {
+        return false;
+    }
     EmptyClipboard();
 
     const uint32_t imgSize = uint32_t(bgra.size());
@@ -99,15 +115,21 @@ bool CopyBgra8ToClipboard(std::vector<uint8_t> bgra, uint32_t width,
     HGLOBAL hV5 = MakeDib(v5, bgra);
     HGLOBAL hDib = MakeDib(bih, bgra);
     if (!hV5 || !hDib) {
-        if (hV5) GlobalFree(hV5);
-        if (hDib) GlobalFree(hDib);
+        if (hV5) {
+            GlobalFree(hV5);
+        }
+        if (hDib) {
+            GlobalFree(hDib);
+        }
         CloseClipboard();
         return false;
     }
 
     bool ok = SetClipboardData(CF_DIBV5, hV5) != nullptr;
     if (ok) {
-        if (!SetClipboardData(CF_DIB, hDib)) GlobalFree(hDib);
+        if (!SetClipboardData(CF_DIB, hDib)) {
+            GlobalFree(hDib);
+        }
         // PNG for web/Electron consumers (this is what fixed pasting into
         // chat apps / browsers, which ignore the DIB formats).
         SetPngFormat(bgra, width, height);

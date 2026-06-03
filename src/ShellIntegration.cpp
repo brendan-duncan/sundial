@@ -14,7 +14,9 @@ bool WriteString(const std::wstring& subkey, const wchar_t* valueName,
     LSTATUS s = RegCreateKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0,
                                 nullptr, 0, KEY_WRITE, nullptr, &hKey,
                                 nullptr);
-    if (s != ERROR_SUCCESS) return false;
+    if (s != ERROR_SUCCESS) {
+        return false;
+    }
     const DWORD bytes =
         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
     s = RegSetValueExW(hKey, valueName, 0, REG_SZ,
@@ -92,7 +94,9 @@ void EnsureStartupShortcutArgs() {
     const std::wstring lnk = std::wstring(startupDir) + L"\\Sundial.lnk";
     CoTaskMemFree(startupDir);
 
-    if (GetFileAttributesW(lnk.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    if (GetFileAttributesW(lnk.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return;
+    }
 
     IShellLinkW* link = nullptr;
     if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,

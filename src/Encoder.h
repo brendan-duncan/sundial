@@ -16,7 +16,7 @@ std::vector<uint8_t> EncodePngToMemory(const uint8_t* bgra, uint32_t width,
 
 // Write FP16 scRGB pixels as a JPEG XR / HD Photo (.jxr) file. This is the
 // same format Game Bar uses for HDR screenshots and is what Windows Photos
-// recognises as an HDR image.
+// recognizes as an HDR image.
 void SaveJxrHdr(const Frame& frame, const std::wstring& path);
 
 // Tonemap an HDR frame to SDR with the supplied parameters and write as PNG.

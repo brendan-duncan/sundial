@@ -21,7 +21,9 @@ constexpr UINT kIconId = 1;
 
 void EnsureClassRegistered() {
     static bool registered = false;
-    if (registered) return;
+    if (registered) {
+        return;
+    }
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = TrayIcon::WndProcThunk;
@@ -42,7 +44,9 @@ LRESULT CALLBACK TrayIcon::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp,
     }
     auto* self = reinterpret_cast<TrayIcon*>(
         GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (self) return self->WndProc(hwnd, msg, wp, lp);
+    if (self) {
+        return self->WndProc(hwnd, msg, wp, lp);
+    }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
@@ -64,14 +68,18 @@ LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == TrayShowToolbarMessage()) {
         // A second launch asked us to bring up the toolbar - same as a
         // left-click on the tray icon.
-        if (primary_) primary_();
+        if (primary_) {
+            primary_();
+        }
         return 0;
     }
     if (msg == kTrayMessage) {
         switch (LOWORD(lp)) {
             case WM_LBUTTONUP:
             case WM_LBUTTONDBLCLK:
-                if (primary_) primary_();
+                if (primary_) {
+                    primary_();
+                }
                 return 0;
             case WM_RBUTTONUP:
             case WM_CONTEXTMENU:
@@ -83,19 +91,29 @@ LRESULT TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_COMMAND) {
         switch (LOWORD(wp)) {
             case kIdCapture:
-                if (primary_) primary_();
+                if (primary_) {
+                    primary_();
+                }
                 return 0;
             case kIdEditImage:
-                if (editImage_) editImage_();
+                if (editImage_) {
+                    editImage_();
+                }
                 return 0;
             case kIdCheckUpdates:
-                if (checkUpdates_) checkUpdates_();
+                if (checkUpdates_) {
+                    checkUpdates_();
+                }
                 return 0;
             case kIdAbout:
-                if (about_) about_();
+                if (about_) {
+                    about_();
+                }
                 return 0;
             case kIdExit:
-                if (exit_) exit_();
+                if (exit_) {
+                    exit_();
+                }
                 return 0;
         }
     }
@@ -136,7 +154,9 @@ bool TrayIcon::Initialize(const wchar_t* tooltip) {
     hwnd_ = CreateWindowExW(0, kClassName, L"SundialTray", 0, 0, 0, 0, 0,
                             HWND_MESSAGE, nullptr,
                             GetModuleHandleW(nullptr), this);
-    if (!hwnd_) return false;
+    if (!hwnd_) {
+        return false;
+    }
 
     nid_.cbSize = sizeof(nid_);
     nid_.hWnd = hwnd_;

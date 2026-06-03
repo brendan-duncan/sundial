@@ -377,41 +377,52 @@ bool ShaderTonemap::Initialize(ID3D11Device* device,
 
     auto vsBlob = Compile("VSMain", "vs_5_0");
     auto psBlob = Compile("PSMain", "ps_5_0");
-    if (!vsBlob || !psBlob) return false;
+    if (!vsBlob || !psBlob) {
+        return false;
+    }
 
     if (FAILED(device_->CreateVertexShader(vsBlob->GetBufferPointer(),
                                            vsBlob->GetBufferSize(), nullptr,
-                                           &vs_)))
+                                           &vs_))) {
         return false;
+    }
     if (FAILED(device_->CreatePixelShader(psBlob->GetBufferPointer(),
                                           psBlob->GetBufferSize(), nullptr,
-                                          &ps_)))
+                                          &ps_))) {
         return false;
+    }
 
     D3D11_SAMPLER_DESC sd{};
     sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
-    if (FAILED(device_->CreateSamplerState(&sd, &sampler_))) return false;
+    if (FAILED(device_->CreateSamplerState(&sd, &sampler_))) {
+        return false;
+    }
 
     D3D11_BUFFER_DESC bd{};
     bd.ByteWidth = sizeof(CBLayout);
     bd.Usage = D3D11_USAGE_DYNAMIC;
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    if (FAILED(device_->CreateBuffer(&bd, nullptr, &cb_))) return false;
+    if (FAILED(device_->CreateBuffer(&bd, nullptr, &cb_))) {
+        return false;
+    }
 
     D3D11_RASTERIZER_DESC rd{};
     rd.FillMode = D3D11_FILL_SOLID;
     rd.CullMode = D3D11_CULL_NONE;
     rd.DepthClipEnable = TRUE;
-    if (FAILED(device_->CreateRasterizerState(&rd, &rasterizer_)))
+    if (FAILED(device_->CreateRasterizerState(&rd, &rasterizer_))) {
         return false;
+    }
 
     D3D11_BLEND_DESC bsd{};
     bsd.RenderTarget[0].BlendEnable = FALSE;
     bsd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    if (FAILED(device_->CreateBlendState(&bsd, &blendOpaque_))) return false;
+    if (FAILED(device_->CreateBlendState(&bsd, &blendOpaque_))) {
+        return false;
+    }
 
     return true;
 }
@@ -436,12 +447,15 @@ bool ShaderTonemap::SetSource(const Frame& frame) {
     td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
     ComPtr<ID3D11Texture2D> tex;
-    if (FAILED(device_->CreateTexture2D(&td, nullptr, &tex))) return false;
+    if (FAILED(device_->CreateTexture2D(&td, nullptr, &tex))) {
+        return false;
+    }
     context_->UpdateSubresource(tex.Get(), 0, nullptr, frame.pixels.data(),
                                 frame.width * frame.bytesPerPixel, 0);
     if (FAILED(device_->CreateShaderResourceView(tex.Get(), nullptr,
-                                                 &sourceSrv_)))
+                                                 &sourceSrv_))) {
         return false;
+    }
     context_->GenerateMips(sourceSrv_.Get());
 
     // Track actual mip count for the local-tonemap LOD selection.
@@ -457,14 +471,20 @@ bool ShaderTonemap::SetSourceTexture(ID3D11Texture2D* tex, bool isHdr) {
     // No mip chain on this path: the recorder feeds full-res GPU textures and
     // local tonemap (which samples a coarse LOD) isn't used during recording.
     sourceMipCount_ = 1;
-    if (!tex) return false;
+    if (!tex) {
+        return false;
+    }
     return SUCCEEDED(
         device_->CreateShaderResourceView(tex, nullptr, &sourceSrv_));
 }
 
 bool ShaderTonemap::ResizeTarget(uint32_t width, uint32_t height) {
-    if (width == 0 || height == 0) return false;
-    if (width == outputW_ && height == outputH_ && outputSdrSrv_) return true;
+    if (width == 0 || height == 0) {
+        return false;
+    }
+    if (width == outputW_ && height == outputH_ && outputSdrSrv_) {
+        return true;
+    }
 
     outputSdrRtv_.Reset(); outputSdrSrv_.Reset(); outputSdrTex_.Reset();
     outputHdrRtv_.Reset(); outputHdrSrv_.Reset(); outputHdrTex_.Reset();
@@ -482,11 +502,15 @@ bool ShaderTonemap::ResizeTarget(uint32_t width, uint32_t height) {
         td.SampleDesc.Count = 1;
         td.Usage = D3D11_USAGE_DEFAULT;
         td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-        if (FAILED(device_->CreateTexture2D(&td, nullptr, &tex))) return false;
-        if (FAILED(device_->CreateRenderTargetView(tex.Get(), nullptr, &rtv)))
+        if (FAILED(device_->CreateTexture2D(&td, nullptr, &tex))) {
             return false;
-        if (FAILED(device_->CreateShaderResourceView(tex.Get(), nullptr, &srv)))
+        }
+        if (FAILED(device_->CreateRenderTargetView(tex.Get(), nullptr, &rtv))) {
             return false;
+        }
+        if (FAILED(device_->CreateShaderResourceView(tex.Get(), nullptr, &srv))) {
+            return false;
+        }
         return true;
     };
     // SDR-tonemapped output stays 8-bit sRGB-encoded - the values are always
@@ -497,16 +521,21 @@ bool ShaderTonemap::ResizeTarget(uint32_t width, uint32_t height) {
                                       ? DXGI_FORMAT_R16G16B16A16_FLOAT
                                       : DXGI_FORMAT_R8G8B8A8_UNORM;
     if (!make(outputSdrTex_, outputSdrRtv_, outputSdrSrv_,
-              DXGI_FORMAT_R8G8B8A8_UNORM)) return false;
-    if (!make(outputHdrTex_, outputHdrRtv_, outputHdrSrv_, hdrFormat))
+              DXGI_FORMAT_R8G8B8A8_UNORM)) {
         return false;
+    }
+    if (!make(outputHdrTex_, outputHdrRtv_, outputHdrSrv_, hdrFormat)) {
+        return false;
+    }
     outputW_ = width;
     outputH_ = height;
     return true;
 }
 
 void ShaderTonemap::RenderSdr(const TonemapParams& params) {
-    if (!sourceSrv_ || !outputSdrRtv_) return;
+    if (!sourceSrv_ || !outputSdrRtv_) {
+        return;
+    }
 
     D3D11_MAPPED_SUBRESOURCE m{};
     if (SUCCEEDED(context_->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
@@ -542,7 +571,9 @@ void ShaderTonemap::RenderSdr(const TonemapParams& params) {
 }
 
 void ShaderTonemap::RenderHdrPassthrough() {
-    if (!sourceSrv_ || !outputHdrRtv_) return;
+    if (!sourceSrv_ || !outputHdrRtv_) {
+        return;
+    }
 
     D3D11_MAPPED_SUBRESOURCE m{};
     if (SUCCEEDED(context_->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,

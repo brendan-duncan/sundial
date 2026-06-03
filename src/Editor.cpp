@@ -39,16 +39,22 @@ namespace {
 constexpr wchar_t kClassName[] = L"SundialEditor";
 
 std::wstring Utf8ToWide(const char* s) {
-    if (!s || !*s) return {};
+    if (!s || !*s) {
+        return {};
+    }
     int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (n <= 1) return {};
+    if (n <= 1) {
+        return {};
+    }
     std::wstring w(size_t(n - 1), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), n);
     return w;
 }
 
 std::string WideToUtf8(const std::wstring& w) {
-    if (w.empty()) return {};
+    if (w.empty()) {
+        return {};
+    }
     int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()),
                                 nullptr, 0, nullptr, nullptr);
     std::string s(size_t(n), '\0');
@@ -233,10 +239,39 @@ struct EditorContext {
     ViewMode viewMode = ViewMode::SdrOnly;
     bool holdHdr = false;       // SDR-only: button held to peek at HDR
     float splitPos = 0.5f;      // Split mode divider, 0..1 of preview width
+
+    // Editor mode. Tonemap is the default layout (sidebar + comparison views);
+    // Crop and Resize are isolated full-window editors entered from the
+    // preview toolbar. Both are non-destructive - they only adjust the
+    // committed cropX/Y/W/H and resizeW/H that ProduceEditedFrame bakes in.
+    enum class Mode { Tonemap, Crop, Resize };
+    Mode mode = Mode::Tonemap;
+    // Snapshot of the committed crop/resize taken when a sub-mode is entered,
+    // restored on Cancel / Esc.
+    int cropBakX = 0, cropBakY = 0, cropBakW = 0, cropBakH = 0;
+    int resizeBakW = 0, resizeBakH = 0;
+    // Resize editor view-pan offset (screen px) from the centered position, so
+    // a 1:1 preview larger than the canvas can be dragged around.
+    ImVec2 resizePan{};
+
+    // What the tonemap's source texture currently holds, so ApplyTonemapSource
+    // can skip a redundant CPU-crop + GPU re-upload. full==true means the whole
+    // source image is loaded; otherwise the [x,y,w,h] crop is.
+    struct SourceKey {
+        bool full = true;
+        int x = 0, y = 0, w = 0, h = 0;
+        bool operator==(const SourceKey& o) const {
+            return full == o.full && x == o.x && y == o.y && w == o.w &&
+                   h == o.h;
+        }
+    };
+    SourceKey loadedSource;
 };
 
 LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) {
+        return true;
+    }
 
     auto* ctx = reinterpret_cast<EditorContext*>(
         GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -256,7 +291,9 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_CLOSE:
-            if (ctx) ctx->exitRequested = true;
+            if (ctx) {
+                ctx->exitRequested = true;
+            }
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -264,7 +301,9 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 void EnsureClassRegistered() {
     static bool registered = false;
-    if (registered) return;
+    if (registered) {
+        return;
+    }
     HICON appIcon = LoadIconW(GetModuleHandleW(nullptr),
                               MAKEINTRESOURCEW(IDI_APP_ICON));
     WNDCLASSEXW wc{};
@@ -287,19 +326,29 @@ void EnsureClassRegistered() {
 // HDR brightness, or fall back to the standard 8-bit SDR path.
 bool DisplayIsHdr(IDXGIAdapter* adapter, HWND hwnd) {
     HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-    if (!mon) return false;
+    if (!mon) {
+        return false;
+    }
     ComPtr<IDXGIOutput> output;
     for (UINT i = 0;
          adapter->EnumOutputs(i, output.ReleaseAndGetAddressOf()) !=
              DXGI_ERROR_NOT_FOUND;
          ++i) {
         DXGI_OUTPUT_DESC od;
-        if (FAILED(output->GetDesc(&od))) continue;
-        if (od.Monitor != mon) continue;
+        if (FAILED(output->GetDesc(&od))) {
+            continue;
+        }
+        if (od.Monitor != mon) {
+            continue;
+        }
         ComPtr<IDXGIOutput6> o6;
-        if (FAILED(output.As(&o6))) continue;
+        if (FAILED(output.As(&o6))) {
+            continue;
+        }
         DXGI_OUTPUT_DESC1 od1{};
-        if (FAILED(o6->GetDesc1(&od1))) continue;
+        if (FAILED(o6->GetDesc1(&od1))) {
+            continue;
+        }
         return od1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
     }
     return false;
@@ -315,11 +364,17 @@ bool CreateDeviceAndSwapChain(EditorContext& ctx) {
     }
 
     ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(ctx.device.As(&dxgiDevice))) return false;
+    if (FAILED(ctx.device.As(&dxgiDevice))) {
+        return false;
+    }
     ComPtr<IDXGIAdapter> adapter;
-    if (FAILED(dxgiDevice->GetAdapter(&adapter))) return false;
+    if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
+        return false;
+    }
     ComPtr<IDXGIFactory2> factory;
-    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) return false;
+    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+        return false;
+    }
 
     // Use an FP16 scRGB swap chain when the editor is on an HDR display so
     // the preview can carry values above SDR white. Fall back to 8-bit if
@@ -348,7 +403,9 @@ bool CreateDeviceAndSwapChain(EditorContext& ctx) {
                                              &scd, nullptr, nullptr,
                                              &ctx.swapChain);
     }
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        return false;
+    }
 
     if (ctx.hdrMode) {
         ComPtr<IDXGISwapChain3> sc3;
@@ -364,7 +421,9 @@ bool CreateDeviceAndSwapChain(EditorContext& ctx) {
 void CreateBackbufferRtv(EditorContext& ctx) {
     ctx.backbufferRtv.Reset();
     ComPtr<ID3D11Texture2D> bb;
-    if (FAILED(ctx.swapChain->GetBuffer(0, IID_PPV_ARGS(&bb)))) return;
+    if (FAILED(ctx.swapChain->GetBuffer(0, IID_PPV_ARGS(&bb)))) {
+        return;
+    }
     ctx.device->CreateRenderTargetView(bb.Get(), nullptr, &ctx.backbufferRtv);
 }
 
@@ -384,6 +443,38 @@ Frame ProduceEditedFrame(const EditorContext& ctx) {
                         uint32_t(ctx.resizeH));
     }
     return edited;
+}
+
+// Load the tonemap's source texture for the current editor mode: the full
+// image while cropping (so the crop can be redrawn against it), or the
+// committed crop otherwise (so the comparison/resize views render the cropped
+// result). Skips the upload when the needed source is already loaded.
+void ApplyTonemapSource(EditorContext& ctx) {
+    EditorContext::SourceKey want;
+    const bool cropIsFull =
+        ctx.cropX == 0 && ctx.cropY == 0 &&
+        ctx.cropW == int(ctx.source->width) &&
+        ctx.cropH == int(ctx.source->height);
+    if (ctx.mode == EditorContext::Mode::Crop || cropIsFull) {
+        want.full = true;
+    } else {
+        want.full = false;
+        want.x = ctx.cropX;
+        want.y = ctx.cropY;
+        want.w = ctx.cropW;
+        want.h = ctx.cropH;
+    }
+    if (want == ctx.loadedSource) {
+        return;
+    }
+    if (want.full) {
+        ctx.tonemap.SetSource(*ctx.source);
+    } else {
+        Frame cropped = Crop(*ctx.source, uint32_t(want.x), uint32_t(want.y),
+                             uint32_t(want.w), uint32_t(want.h));
+        ctx.tonemap.SetSource(cropped);
+    }
+    ctx.loadedSource = want;
 }
 
 std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
@@ -463,14 +554,17 @@ void DoCopy(EditorContext& ctx) {
 }
 
 void ResizeSwapChain(EditorContext& ctx) {
-    if (!ctx.swapChain) return;
+    if (!ctx.swapChain) {
+        return;
+    }
     ctx.backbufferRtv.Reset();
     ctx.swapChain->ResizeBuffers(0, ctx.clientW, ctx.clientH,
                                  DXGI_FORMAT_UNKNOWN, 0);
     CreateBackbufferRtv(ctx);
 }
 
-enum class IconKind { None, Save, SaveAs, Copy, Cancel, Hdr, Sdr, Gear };
+enum class IconKind { None, Save, SaveAs, Copy, Cancel, Hdr, Sdr, Gear,
+                      Crop, Resize, Check };
 
 void DrawIcon(ImDrawList* dl, ImVec2 c, IconKind kind) {
     const ImU32 col = IM_COL32(220, 220, 220, 255);
@@ -511,7 +605,7 @@ void DrawIcon(ImDrawList* dl, ImVec2 c, IconKind kind) {
             break;
         }
         case IconKind::Hdr: {
-            // Small "sun": centre circle + 8 short rays
+            // Small "sun": center circle + 8 short rays
             dl->AddCircleFilled(c, r * 0.45f, col);
             for (int i = 0; i < 8; ++i) {
                 const float a = i * 0.7853981633f;
@@ -538,6 +632,32 @@ void DrawIcon(ImDrawList* dl, ImVec2 c, IconKind kind) {
                 dl->AddLine({c.x + ca * r * 0.62f, c.y + sa * r * 0.62f},
                             {c.x + ca * r, c.y + sa * r}, col, 1.6f);
             }
+            break;
+        }
+        case IconKind::Check: {
+            dl->AddLine({c.x - r, c.y}, {c.x - r * 0.3f, c.y + r * 0.7f},
+                        col, 1.8f);
+            dl->AddLine({c.x - r * 0.3f, c.y + r * 0.7f},
+                        {c.x + r, c.y - r * 0.7f}, col, 1.8f);
+            break;
+        }
+        case IconKind::Crop: {
+            // Two overlapping L-brackets forming crop marks.
+            dl->AddLine({c.x - r, c.y - r * 0.4f}, {c.x - r, c.y + r}, col, 1.4f);
+            dl->AddLine({c.x - r, c.y + r}, {c.x + r * 0.4f, c.y + r}, col, 1.4f);
+            dl->AddLine({c.x + r, c.y + r * 0.4f}, {c.x + r, c.y - r}, col, 1.4f);
+            dl->AddLine({c.x + r, c.y - r}, {c.x - r * 0.4f, c.y - r}, col, 1.4f);
+            break;
+        }
+        case IconKind::Resize: {
+            // Rectangle with a diagonal double-arrow across the corner.
+            dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0, 0, 1.2f);
+            dl->AddLine({c.x - r * 0.5f, c.y - r * 0.5f},
+                        {c.x + r * 0.5f, c.y + r * 0.5f}, col, 1.4f);
+            dl->AddLine({c.x + r * 0.5f, c.y + r * 0.5f},
+                        {c.x + r * 0.5f, c.y - r * 0.1f}, col, 1.4f);
+            dl->AddLine({c.x + r * 0.5f, c.y + r * 0.5f},
+                        {c.x - r * 0.1f, c.y + r * 0.5f}, col, 1.4f);
             break;
         }
         default: break;
@@ -624,11 +744,15 @@ void DrawPresetSection(EditorContext& ctx) {
     }
     ImGui::SameLine();
     const bool hasActive = !ctx.activePreset.empty();
-    if (!hasActive) ImGui::BeginDisabled();
+    if (!hasActive) {
+        ImGui::BeginDisabled();
+    }
     if (ImGui::Button("Delete")) {
         ImGui::OpenPopup("Delete Preset?");
     }
-    if (!hasActive) ImGui::EndDisabled();
+    if (!hasActive) {
+        ImGui::EndDisabled();
+    }
 
     if (ImGui::BeginPopupModal("Save Preset", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize |
@@ -643,7 +767,10 @@ void DrawPresetSection(EditorContext& ctx) {
             NormalizePresetName(Utf8ToWide(ctx.presetNameBuf));
         bool exists = false;
         for (const auto& n : ctx.presetNames) {
-            if (n == proposed) { exists = true; break; }
+            if (n == proposed) {
+                exists = true;
+                break;
+            }
         }
         if (proposed.empty()) {
             ImGui::TextDisabled("Enter a name to save.");
@@ -655,14 +782,18 @@ void DrawPresetSection(EditorContext& ctx) {
         }
 
         const bool canSave = !proposed.empty();
-        if (!canSave) ImGui::BeginDisabled();
+        if (!canSave) {
+            ImGui::BeginDisabled();
+        }
         if (ImGui::Button("Save", ImVec2(96, 0)) || (enter && canSave)) {
             SavePreset(proposed, ctx.params);
             ctx.presetNames = ListPresets();
             ctx.activePreset = proposed;
             ImGui::CloseCurrentPopup();
         }
-        if (!canSave) ImGui::EndDisabled();
+        if (!canSave) {
+            ImGui::EndDisabled();
+        }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(96, 0))) {
             ImGui::CloseCurrentPopup();
@@ -698,12 +829,14 @@ void DoSave(EditorContext& ctx) {
 }
 
 // Open the Save As dialog. Returns true if the user picked a path (we're now
-// committed to saving + exiting); false if they cancelled the dialog.
+// committed to saving + exiting); false if they canceled the dialog.
 bool DoSaveAs(EditorContext& ctx) {
     std::wstring path =
         PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder,
                        ctx.source && ctx.source->isHdr);
-    if (path.empty()) return false;
+    if (path.empty()) {
+        return false;
+    }
     ctx.result.outputPath = path;
     ctx.result.explicitPath = true;  // one explicit file, not the format set
     ctx.result.saved = true;
@@ -768,9 +901,11 @@ void DrawSettingsPopup(EditorContext& ctx) {
 #endif
 #ifdef SUNDIAL_HAS_AVIF
     changed |= ImGui::Checkbox("HDR AVIF / .avif (HDR)", &ctx.snapshot.avif);
-    // The two encodings are mutually exclusive; show as a radio pair, greyed
+    // The two encodings are mutually exclusive; show as a radio pair, grayed
     // until AVIF is enabled.
-    if (!ctx.snapshot.avif) ImGui::BeginDisabled();
+    if (!ctx.snapshot.avif) {
+        ImGui::BeginDisabled();
+    }
     int avifMode = static_cast<int>(ctx.snapshot.avifMode);
     ImGui::Indent();
     bool modeChanged = false;
@@ -784,7 +919,9 @@ void DrawSettingsPopup(EditorContext& ctx) {
         ctx.snapshot.avifMode = static_cast<AvifHdrMode>(avifMode);
         changed = true;
     }
-    if (!ctx.snapshot.avif) ImGui::EndDisabled();
+    if (!ctx.snapshot.avif) {
+        ImGui::EndDisabled();
+    }
 #else
     ImGui::BeginDisabled();
     bool noAvif = false;
@@ -823,14 +960,20 @@ void DrawSettingsPopup(EditorContext& ctx) {
     }
     ImGui::SameLine();
     const bool customFolder = !ctx.outputFolder.empty();
-    if (!customFolder) ImGui::BeginDisabled();
+    if (!customFolder) {
+        ImGui::BeginDisabled();
+    }
     if (ImGui::Button("Reset to Default")) {
         ctx.outputFolder.clear();
         changed = true;
     }
-    if (!customFolder) ImGui::EndDisabled();
+    if (!customFolder) {
+        ImGui::EndDisabled();
+    }
 
-    if (changed) PersistEditorSettings(ctx);
+    if (changed) {
+        PersistEditorSettings(ctx);
+    }
 
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::Separator();
@@ -901,8 +1044,9 @@ void DrawSidebar(EditorContext& ctx) {
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::Separator();
 
+    // Scroll only when the controls actually overflow (no forced scrollbar).
     ImGui::BeginChild("sidebar_scroll", ImVec2(0, 0), false,
-                      ImGuiWindowFlags_AlwaysVerticalScrollbar);
+                      ImGuiWindowFlags_None);
 
     ImGui::TextUnformatted("HDR to SDR");
     ImGui::Separator();
@@ -937,15 +1081,21 @@ void DrawSidebar(EditorContext& ctx) {
         // them in the same section so the curve's full controls are together.
         const bool kneeAware = ctx.params.curve == TonemapCurve::PreserveSdr ||
                                ctx.params.curve == TonemapCurve::BT2390;
-        if (!kneeAware) ImGui::BeginDisabled();
+        if (!kneeAware) {
+            ImGui::BeginDisabled();
+        }
         ImGui::SliderFloat("Knee point", &ctx.params.kneePoint, 0.05f, 0.95f,
                            "%.2f");
         ImGui::SliderFloat("Highlight desat", &ctx.params.highlightDesat,
                            0.0f, 1.0f, "%.2f");
-        if (!kneeAware) ImGui::EndDisabled();
+        if (!kneeAware) {
+            ImGui::EndDisabled();
+        }
 
         const bool peakAware = ctx.params.curve == TonemapCurve::BT2390;
-        if (!peakAware) ImGui::BeginDisabled();
+        if (!peakAware) {
+            ImGui::BeginDisabled();
+        }
         ImGui::SliderFloat("Source peak (nits)", &ctx.params.sourcePeakNits,
                            400.0f, 4000.0f, "%.0f");
         ImGui::SameLine();
@@ -955,7 +1105,9 @@ void DrawSidebar(EditorContext& ctx) {
                                    : 1000.0f;
             ctx.params.sourcePeakNits = std::clamp(peak, 400.0f, 4000.0f);
         }
-        if (!peakAware) ImGui::EndDisabled();
+        if (!peakAware) {
+            ImGui::EndDisabled();
+        }
     }
     if (ImGui::CollapsingHeader("Color")) {
         ImGui::SliderFloat("Saturation", &ctx.params.saturation, 0.0f, 2.0f,
@@ -991,48 +1143,8 @@ void DrawSidebar(EditorContext& ctx) {
         ctx.params = TonemapParams{};
     }
 
-    // Crop/resize only apply when producing a still. In look-picker mode the
-    // recording region is already chosen, so these are hidden.
-    if (!ctx.tonemapOnly) {
-        ImGui::Dummy(ImVec2(0, 8));
-        ImGui::TextUnformatted("Crop");
-        ImGui::TextDisabled(
-            "Drag on the preview to draw a crop; drag the handles to resize "
-            "or the inside to move it.");
-        ImGui::Separator();
-        const int maxW = int(ctx.source->width);
-        const int maxH = int(ctx.source->height);
-        ImGui::DragInt("X", &ctx.cropX, 1, 0, maxW - 1);
-        ImGui::DragInt("Y", &ctx.cropY, 1, 0, maxH - 1);
-        ImGui::DragInt("Width", &ctx.cropW, 1, 1, maxW - ctx.cropX);
-        ImGui::DragInt("Height", &ctx.cropH, 1, 1, maxH - ctx.cropY);
-        if (ImGui::Button("Reset crop")) {
-            ctx.cropX = ctx.cropY = 0;
-            ctx.cropW = maxW;
-            ctx.cropH = maxH;
-        }
-
-        ImGui::Dummy(ImVec2(0, 8));
-        ImGui::TextUnformatted("Resize");
-        ImGui::Separator();
-        ImGui::Checkbox("Lock aspect", &ctx.resizeLockAspect);
-        int prevW = ctx.resizeW;
-        int prevH = ctx.resizeH;
-        if (ImGui::DragInt("Out width", &ctx.resizeW, 1, 1, 16384)) {
-            if (ctx.resizeLockAspect && prevW > 0) {
-                ctx.resizeH = std::max(1, int(ctx.resizeW / ctx.aspect + 0.5f));
-            }
-        }
-        if (ImGui::DragInt("Out height", &ctx.resizeH, 1, 1, 16384)) {
-            if (ctx.resizeLockAspect && prevH > 0) {
-                ctx.resizeW = std::max(1, int(ctx.resizeH * ctx.aspect + 0.5f));
-            }
-        }
-        if (ImGui::Button("Reset size")) {
-            ctx.resizeW = maxW;
-            ctx.resizeH = maxH;
-        }
-    }
+    // Crop and Resize now live in their own full-window editors, entered from
+    // the preview toolbar (Crop / Resize buttons).
 
     ImGui::EndChild();  // sidebar_scroll
     ImGui::EndChild();  // sidebar
@@ -1041,7 +1153,9 @@ void DrawSidebar(EditorContext& ctx) {
 void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
                                    float h, bool interactive) {
     // No crop in look-picker mode: the recording region is already fixed.
-    if (ctx.tonemapOnly) return;
+    if (ctx.tonemapOnly) {
+        return;
+    }
     const float scaleX = w / float(ctx.source->width);
     const float scaleY = h / float(ctx.source->height);
     const int srcW = int(ctx.source->width);
@@ -1082,12 +1196,14 @@ void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
         const auto classify = [&](ImVec2 m) -> CropGrab {
             for (const auto& hd : handles) {
                 const float dx = m.x - hd.pos.x, dy = m.y - hd.pos.y;
-                if (dx * dx + dy * dy <= kHandleHitR * kHandleHitR)
+                if (dx * dx + dy * dy <= kHandleHitR * kHandleHitR) {
                     return hd.mode;
+                }
             }
             if (!cropIsFull && m.x > cropTL.x && m.x < cropBR.x &&
-                m.y > cropTL.y && m.y < cropBR.y)
+                m.y > cropTL.y && m.y < cropBR.y) {
                 return CropGrab::Move;
+            }
             return CropGrab::New;
         };
 
@@ -1134,8 +1250,9 @@ void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
                     const float dx = mouse.x - ctx.cropDragAnchor.x;
                     const float dy = mouse.y - ctx.cropDragAnchor.y;
                     if (dx * dx + dy * dy >=
-                        kDragThresholdPx * kDragThresholdPx)
+                        kDragThresholdPx * kDragThresholdPx) {
                         ctx.cropDragMoved = true;
+                    }
                 }
                 if (ctx.cropDragMoved) {
                     ImVec2 a = screenToSource(ctx.cropDragAnchor);
@@ -1182,8 +1299,12 @@ void DrawCropOverlayAndInteraction(EditorContext& ctx, ImVec2 imgTL, float w,
                 x1 = std::clamp(x1, 0, srcW);
                 y1 = std::clamp(y1, 0, srcH);
                 // A handle dragged past the opposite edge flips the rect.
-                if (x1 < x0) std::swap(x0, x1);
-                if (y1 < y0) std::swap(y0, y1);
+                if (x1 < x0) {
+                    std::swap(x0, x1);
+                }
+                if (y1 < y0) {
+                    std::swap(y0, y1);
+                }
                 ctx.cropX = x0;
                 ctx.cropY = y0;
                 ctx.cropW = std::max(1, x1 - x0);
@@ -1264,9 +1385,13 @@ void AddHdrPassthroughImage(ImDrawList* dl, EditorContext& ctx,
                             ImVec2 uv0 = ImVec2(0, 0),
                             ImVec2 uv1 = ImVec2(1, 1)) {
     const bool wrap = ctx.hdrMode && ctx.tonemap.LinearHdrOutput();
-    if (wrap) dl->AddCallback(HdrImguiTexLinearCallback, &ctx);
+    if (wrap) {
+        dl->AddCallback(HdrImguiTexLinearCallback, &ctx);
+    }
     dl->AddImage(tex, a, b, uv0, uv1);
-    if (wrap) dl->AddCallback(HdrImguiTexSrgbCallback, &ctx);
+    if (wrap) {
+        dl->AddCallback(HdrImguiTexSrgbCallback, &ctx);
+    }
 }
 
 void DrawPreviewToolbar(EditorContext& ctx) {
@@ -1282,13 +1407,51 @@ void DrawPreviewToolbar(EditorContext& ctx) {
             ctx.viewMode = mode;
             ctx.holdHdr = false;
         }
-        if (holdOut) *holdOut = ImGui::IsItemActive();
-        if (selected) ImGui::PopStyleColor();
+        if (holdOut) {
+            *holdOut = ImGui::IsItemActive();
+        }
+        if (selected) {
+            ImGui::PopStyleColor();
+        }
         ImGui::SameLine();
     };
     modeButton("SDR", EditorContext::ViewMode::SdrOnly, &sdrButtonHeld);
     modeButton("Split (SDR | HDR)", EditorContext::ViewMode::Split);
     modeButton("Side-by-side", EditorContext::ViewMode::SideBySide);
+
+    // Crop / Resize enter their isolated full-window editors. Hidden in
+    // look-picker mode (tonemapOnly), where there's no still to crop or resize.
+    if (!ctx.tonemapOnly) {
+        const float fh = ImGui::GetFrameHeight();
+        ImGui::Dummy(ImVec2(16, 0));
+        ImGui::SameLine();
+        if (IconButton("cropmode", "Crop", IconKind::Crop, ImVec2(0, fh))) {
+            ctx.cropBakX = ctx.cropX;
+            ctx.cropBakY = ctx.cropY;
+            ctx.cropBakW = ctx.cropW;
+            ctx.cropBakH = ctx.cropH;
+            ctx.mode = EditorContext::Mode::Crop;
+            ApplyTonemapSource(ctx);
+        }
+        ImGui::SameLine();
+        if (IconButton("resizemode", "Resize", IconKind::Resize,
+                       ImVec2(0, fh))) {
+            ctx.resizeBakW = ctx.resizeW;
+            ctx.resizeBakH = ctx.resizeH;
+            ctx.resizePan = ImVec2(0, 0);
+            ctx.mode = EditorContext::Mode::Resize;
+            ApplyTonemapSource(ctx);
+        }
+        ImGui::SameLine();
+        // When a resize is applied (target differs from the cropped size),
+        // show the from->to dimensions next to the Resize button.
+        if (ctx.resizeW != ctx.cropW || ctx.resizeH != ctx.cropH) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Resized: %dx%d -> %dx%d", ctx.cropW, ctx.cropH,
+                                ctx.resizeW, ctx.resizeH);
+            ImGui::SameLine();
+        }
+    }
     ImGui::NewLine();  // close out the SameLine row started by modeButton
 
     // SDR-only mode: holding the SDR button peeks the HDR-passthrough view.
@@ -1309,9 +1472,15 @@ void DrawPreview(EditorContext& ctx) {
 
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     if (avail.x > 4 && avail.y > 4) {
-        // Layout depends on view mode.
-        const float srcAspect = float(ctx.source->width) /
-                                float(std::max(1u, ctx.source->height));
+        // Layout depends on view mode. The tonemap source is the committed
+        // crop, so the comparison views render the cropped image; letterbox it
+        // at the committed resize aspect so a non-square resize shows too.
+        // Look-picker mode never crops/resizes, so it keeps the source aspect.
+        const float srcAspect =
+            ctx.tonemapOnly
+                ? float(ctx.source->width) /
+                      float(std::max(1u, ctx.source->height))
+                : float(ctx.resizeW) / float(std::max(1, ctx.resizeH));
 
         if (ctx.viewMode == EditorContext::ViewMode::SideBySide) {
             // Two letterboxed panels side by side with a small gap.
@@ -1352,9 +1521,6 @@ void DrawPreview(EditorContext& ctx) {
                         "SDR (tonemapped)");
             dl->AddText({hdrTL.x + 6, hdrTL.y + 6}, IM_COL32(255, 255, 255, 220),
                         "HDR (passthrough)");
-
-            // Crop overlay drawn on the SDR panel only (interactive there).
-            DrawCropOverlayAndInteraction(ctx, sdrTL, w, h, /*interactive=*/true);
             return;
         }
 
@@ -1372,7 +1538,9 @@ void DrawPreview(EditorContext& ctx) {
         ctx.tonemap.RenderSdr(ctx.params);
         const bool needHdr =
             ctx.viewMode == EditorContext::ViewMode::Split || ctx.holdHdr;
-        if (needHdr) ctx.tonemap.RenderHdrPassthrough();
+        if (needHdr) {
+            ctx.tonemap.RenderHdrPassthrough();
+        }
 
         ImVec2 cursor = ImGui::GetCursorPos();
         cursor.x += (avail.x - w) * 0.5f;
@@ -1392,16 +1560,18 @@ void DrawPreview(EditorContext& ctx) {
             // list keeps the ordering correct.
             const bool wrapLinear =
                 ctx.holdHdr && ctx.hdrMode && ctx.tonemap.LinearHdrOutput();
-            if (wrapLinear) dl->AddCallback(HdrImguiTexLinearCallback, &ctx);
+            if (wrapLinear) {
+                dl->AddCallback(HdrImguiTexLinearCallback, &ctx);
+            }
             ImGui::Image(tex, ImVec2(w, h));
-            if (wrapLinear) dl->AddCallback(HdrImguiTexSrgbCallback, &ctx);
+            if (wrapLinear) {
+                dl->AddCallback(HdrImguiTexSrgbCallback, &ctx);
+            }
             if (ctx.holdHdr) {
                 dl->AddText({imgTL.x + 8, imgTL.y + 6},
                             IM_COL32(255, 230, 130, 240),
                             "HDR (passthrough) - release to return to SDR");
             }
-            DrawCropOverlayAndInteraction(ctx, imgTL, w, h,
-                                          /*interactive=*/true);
         } else if (ctx.viewMode == EditorContext::ViewMode::Split) {
             // Reserve the layout cell.
             ImGui::Dummy(ImVec2(w, h));
@@ -1435,13 +1605,212 @@ void DrawPreview(EditorContext& ctx) {
                 ctx.splitPos =
                     std::clamp((mx - imgTL.x) / w, 0.02f, 0.98f);
             }
-
-            // Crop overlay across the whole image, non-interactive in split.
-            DrawCropOverlayAndInteraction(ctx, imgTL, w, h,
-                                          /*interactive=*/false);
         }
     }
     ImGui::EndChild();
+}
+
+// Leave a crop/resize sub-mode and return to the main tonemap layout, loading
+// the source the comparison views need.
+void ExitSubMode(EditorContext& ctx) {
+    ctx.mode = EditorContext::Mode::Tonemap;
+    ApplyTonemapSource(ctx);
+}
+
+// Isolated full-window crop editor: black canvas with the full image, the
+// corner/edge handles, numeric fields, and Apply/Cancel. The crop lives in
+// ctx.cropX/Y/W/H the whole time (non-destructive); Apply just keeps it and
+// Cancel restores the snapshot taken on entry.
+void DrawCropEditor(EditorContext& ctx) {
+    const int maxW = int(ctx.source->width);
+    const int maxH = int(ctx.source->height);
+
+    if (IconButton("cropApply", "Apply", IconKind::Check, ImVec2(110, 30))) {
+        // Keep a resize the user already applied; only snap the resize target
+        // to the new crop size when no resize was in effect (cropBak* is the
+        // crop as this editor opened). Snapping in the no-resize case also
+        // avoids upscaling the crop back to the source size on save.
+        const bool hadResize =
+            ctx.resizeW != ctx.cropBakW || ctx.resizeH != ctx.cropBakH;
+        if (!hadResize) {
+            ctx.resizeW = ctx.cropW;
+            ctx.resizeH = ctx.cropH;
+        }
+        ctx.aspect = float(ctx.cropW) / float(std::max(1, ctx.cropH));
+        ExitSubMode(ctx);
+        return;
+    }
+    ImGui::SameLine();
+    if (IconButton("cropCancel", "Cancel", IconKind::Cancel, ImVec2(110, 30))) {
+        ctx.cropX = ctx.cropBakX;
+        ctx.cropY = ctx.cropBakY;
+        ctx.cropW = ctx.cropBakW;
+        ctx.cropH = ctx.cropBakH;
+        ExitSubMode(ctx);
+        return;
+    }
+    ImGui::SameLine(0, 24);
+    auto field = [](const char* label, int* v, int lo, int hi) {
+        ImGui::SetNextItemWidth(90);
+        ImGui::DragInt(label, v, 1, lo, hi);
+        ImGui::SameLine();
+    };
+    field("X", &ctx.cropX, 0, maxW - 1);
+    field("Y", &ctx.cropY, 0, maxH - 1);
+    field("W", &ctx.cropW, 1, maxW - ctx.cropX);
+    field("H", &ctx.cropH, 1, maxH - ctx.cropY);
+    if (ImGui::Button("Reset")) {
+        ctx.cropX = ctx.cropY = 0;
+        ctx.cropW = maxW;
+        ctx.cropH = maxH;
+    }
+    // Keep the rect valid after numeric edits or handle drags.
+    ctx.cropX = std::clamp(ctx.cropX, 0, maxW - 1);
+    ctx.cropY = std::clamp(ctx.cropY, 0, maxH - 1);
+    ctx.cropW = std::clamp(ctx.cropW, 1, maxW - ctx.cropX);
+    ctx.cropH = std::clamp(ctx.cropH, 1, maxH - ctx.cropY);
+    ImGui::Separator();
+
+    const ImVec2 canvasTL = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (avail.x <= 4 || avail.y <= 4) {
+        return;
+    }
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(canvasTL, {canvasTL.x + avail.x, canvasTL.y + avail.y},
+                      IM_COL32(0, 0, 0, 255));
+
+    // Letterbox the full source (the tonemap source while in Crop mode).
+    const float srcAspect =
+        float(ctx.source->width) / float(std::max(1u, ctx.source->height));
+    float w = avail.x, h = avail.y;
+    if (avail.x / avail.y > srcAspect) {
+        w = avail.y * srcAspect;
+    } else {
+        h = avail.x / srcAspect;
+    }
+    ctx.tonemap.ResizeTarget(std::max(1u, UINT(w)), std::max(1u, UINT(h)));
+    ctx.tonemap.RenderSdr(ctx.params);
+
+    const ImVec2 imgTL{canvasTL.x + (avail.x - w) * 0.5f,
+                       canvasTL.y + (avail.y - h) * 0.5f};
+    dl->AddImage(reinterpret_cast<ImTextureID>(ctx.tonemap.GetSdrSrv()), imgTL,
+                 {imgTL.x + w, imgTL.y + h});
+
+    DrawCropOverlayAndInteraction(ctx, imgTL, w, h, /*interactive=*/true);
+}
+
+// Isolated full-window resize editor: black canvas where the (cropped) image
+// scales to visualize the new size, with W/H fields, lock-aspect, a percentage
+// readout, and Apply/Cancel. Resize is relative to the committed crop.
+void DrawResizeEditor(EditorContext& ctx) {
+    const int baseW = ctx.cropW;  // the cropped image is what gets resized
+    const int baseH = ctx.cropH;
+
+    if (IconButton("resApply", "Apply", IconKind::Check, ImVec2(110, 30))) {
+        ExitSubMode(ctx);
+        return;
+    }
+    ImGui::SameLine();
+    if (IconButton("resCancel", "Cancel", IconKind::Cancel, ImVec2(110, 30))) {
+        ctx.resizeW = ctx.resizeBakW;
+        ctx.resizeH = ctx.resizeBakH;
+        ExitSubMode(ctx);
+        return;
+    }
+    ImGui::SameLine(0, 24);
+    ImGui::Checkbox("Lock aspect", &ctx.resizeLockAspect);
+    ImGui::SameLine();
+    const int prevW = ctx.resizeW, prevH = ctx.resizeH;
+    ImGui::SetNextItemWidth(110);
+    if (ImGui::DragInt("Width", &ctx.resizeW, 1, 1, 16384)) {
+        if (ctx.resizeLockAspect && prevW > 0) {
+            ctx.resizeH = std::max(1, int(ctx.resizeW / ctx.aspect + 0.5f));
+        }
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110);
+    if (ImGui::DragInt("Height", &ctx.resizeH, 1, 1, 16384)) {
+        if (ctx.resizeLockAspect && prevH > 0) {
+            ctx.resizeW = std::max(1, int(ctx.resizeH * ctx.aspect + 0.5f));
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) {
+        ctx.resizeW = baseW;
+        ctx.resizeH = baseH;
+        ctx.resizePan = ImVec2(0, 0);
+    }
+    ImGui::SameLine();
+    // Read-only reference: the original (pre-resize) size, plus the current
+    // target as a percentage of it.
+    ImGui::Text("Original: %d x %d  (%.0f%%)", baseW, baseH,
+                100.0f * float(ctx.resizeW) / float(std::max(1, baseW)));
+    ImGui::Separator();
+
+    const ImVec2 canvasTL = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (avail.x <= 4 || avail.y <= 4) {
+        return;
+    }
+    const ImVec2 canvasBR{canvasTL.x + avail.x, canvasTL.y + avail.y};
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(canvasTL, canvasBR, IM_COL32(0, 0, 0, 255));
+
+    // Drag anywhere on the canvas to pan the (1:1) preview.
+    ImGui::SetCursorScreenPos(canvasTL);
+    ImGui::InvisibleButton("##resizePan", avail);
+    if (ImGui::IsItemActive()) {
+        const ImVec2 d = ImGui::GetIO().MouseDelta;
+        ctx.resizePan.x += d.x;
+        ctx.resizePan.y += d.y;
+    }
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
+    // Show the image at its actual output resolution (1 image pixel = 1 screen
+    // pixel), centered and clipped to the canvas, so the true size is visible
+    // rather than a fit-to-window scaling. Render the cropped source at the
+    // target resolution; cap the render target so an extreme size can't blow up
+    // GPU memory (the on-screen size stays 1:1 regardless - it just softens
+    // past the cap).
+    const float dispW = float(ctx.resizeW);
+    const float dispH = float(ctx.resizeH);
+    const UINT rtW = std::min(std::max(1u, UINT(ctx.resizeW)), 4096u);
+    const UINT rtH = std::min(std::max(1u, UINT(ctx.resizeH)), 4096u);
+    ctx.tonemap.ResizeTarget(rtW, rtH);
+    ctx.tonemap.RenderSdr(ctx.params);
+
+    // Centered position plus the pan offset, clamped per-axis: an image larger
+    // than the canvas can pan until one of its edges meets the canvas edge (so
+    // the top/bottom/sides are all reachable with no black gap); a smaller
+    // image stays fully inside. Re-derive the pan from the clamped center so it
+    // doesn't accumulate past the limit.
+    const ImVec2 base{canvasTL.x + avail.x * 0.5f, canvasTL.y + avail.y * 0.5f};
+    auto clampAxis = [](float c, float lo, float hi, float half) {
+        if (hi - lo <= 2.0f * half) {
+            // Image larger than canvas: keep it covering the canvas.
+            return std::clamp(c, hi - half, lo + half);
+        }
+        // Image smaller than canvas: keep it fully inside.
+        return std::clamp(c, lo + half, hi - half);
+    };
+    ImVec2 center{base.x + ctx.resizePan.x, base.y + ctx.resizePan.y};
+    center.x = clampAxis(center.x, canvasTL.x, canvasBR.x, dispW * 0.5f);
+    center.y = clampAxis(center.y, canvasTL.y, canvasBR.y, dispH * 0.5f);
+    ctx.resizePan = ImVec2(center.x - base.x, center.y - base.y);
+    dl->PushClipRect(canvasTL, canvasBR, true);
+    // Faint reference outline of the original size, also at 1:1.
+    dl->AddRect({center.x - baseW * 0.5f, center.y - baseH * 0.5f},
+                {center.x + baseW * 0.5f, center.y + baseH * 0.5f},
+                IM_COL32(150, 150, 150, 90), 0.0f, 0, 1.0f);
+    const ImVec2 imgTL{center.x - dispW * 0.5f, center.y - dispH * 0.5f};
+    const ImVec2 imgBR{center.x + dispW * 0.5f, center.y + dispH * 0.5f};
+    dl->AddImage(reinterpret_cast<ImTextureID>(ctx.tonemap.GetSdrSrv()), imgTL,
+                 imgBR);
+    dl->AddRect(imgTL, imgBR, IM_COL32(255, 255, 255, 160), 0.0f, 0, 1.0f);
+    dl->PopClipRect();
 }
 
 // Modal shown when Esc is pressed with unsaved edits: Save / Save As / close
@@ -1465,7 +1834,9 @@ void DrawCloseConfirmPopup(EditorContext& ctx) {
         ImGui::SameLine();
         if (ImGui::Button("Save As...", ImVec2(120, 0))) {
             // Leave the popup open if the user cancels the Save As dialog.
-            if (DoSaveAs(ctx)) ImGui::CloseCurrentPopup();
+            if (DoSaveAs(ctx)) {
+                ImGui::CloseCurrentPopup();
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Close without saving", ImVec2(180, 0))) {
@@ -1527,7 +1898,9 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, initW, initH,
         nullptr, nullptr, GetModuleHandleW(nullptr), &ctx);
-    if (!ctx.hwnd) return ctx.result;
+    if (!ctx.hwnd) {
+        return ctx.result;
+    }
 
     if (!CreateDeviceAndSwapChain(ctx)) {
         DestroyWindow(ctx.hwnd);
@@ -1563,6 +1936,10 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;  // don't litter %CWD% with imgui.ini
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Let a plain click (press+release without dragging) on the DragInt fields
+    // (resize W/H, crop X/Y/W/H) switch them into text input, while a drag
+    // still scrubs the value. Without this, typing needs Ctrl+Click.
+    io.ConfigDragClickToInputText = true;
     ImGui::StyleColorsDark();
     // StyleColorsDark dims modal backdrops with a light gray (0.8,0.8,0.8,0.35),
     // which reads as "transparent white" over the editor. Use transparent black
@@ -1581,9 +1958,13 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
-            if (msg.message == WM_QUIT) ctx.exitRequested = true;
+            if (msg.message == WM_QUIT) {
+                ctx.exitRequested = true;
+            }
         }
-        if (ctx.exitRequested) break;
+        if (ctx.exitRequested) {
+            break;
+        }
         if (ctx.resizeRequested) {
             ResizeSwapChain(ctx);
             ctx.resizeRequested = false;
@@ -1614,8 +1995,9 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
 
         // Global keyboard shortcuts. We suppress them while a text input is
         // active so Ctrl+X / Ctrl+S in the preset name field still do the
-        // expected cut / native-input behavior.
-        if (!io.WantTextInput) {
+        // expected cut / native-input behavior, and while in a crop/resize
+        // sub-mode (Apply/Cancel govern those, not Save).
+        if (!io.WantTextInput && ctx.mode == EditorContext::Mode::Tonemap) {
             const bool ctrl = io.KeyCtrl;
             const bool shift = io.KeyShift;
             const bool s = ImGui::IsKeyPressed(ImGuiKey_S, false);
@@ -1645,18 +2027,35 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
             }
         }
 
-        DrawSidebar(ctx);
-        DrawPreview(ctx);
+        if (ctx.mode == EditorContext::Mode::Crop) {
+            DrawCropEditor(ctx);
+        } else if (ctx.mode == EditorContext::Mode::Resize) {
+            DrawResizeEditor(ctx);
+        } else {
+            DrawSidebar(ctx);
+            DrawPreview(ctx);
+        }
 
         // Esc closes the editor. With unsaved edits, ask save/save-as/close
         // first. While any popup is open (this one or the preset dialogs) let
         // Esc dismiss that popup instead; while a text field is focused let it
-        // cancel that edit instead.
+        // cancel that edit instead. In a crop/resize sub-mode Esc cancels that
+        // sub-mode (like its Cancel button) rather than closing the editor.
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) &&
             !ImGui::GetIO().WantTextInput &&
             !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
-            // Look-picker mode has nothing to save, so Esc just cancels.
-            if (!ctx.tonemapOnly && EditsMade(ctx)) {
+            if (ctx.mode == EditorContext::Mode::Crop) {
+                ctx.cropX = ctx.cropBakX;
+                ctx.cropY = ctx.cropBakY;
+                ctx.cropW = ctx.cropBakW;
+                ctx.cropH = ctx.cropBakH;
+                ExitSubMode(ctx);
+            } else if (ctx.mode == EditorContext::Mode::Resize) {
+                ctx.resizeW = ctx.resizeBakW;
+                ctx.resizeH = ctx.resizeBakH;
+                ExitSubMode(ctx);
+            } else if (!ctx.tonemapOnly && EditsMade(ctx)) {
+                // Look-picker mode has nothing to save, so Esc just cancels.
                 ctx.closeConfirmPending = true;
             } else {
                 ctx.result.saved = false;
@@ -1669,7 +2068,7 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
 
         ImGui::Render();
         // Background gray. In HDR mode the backbuffer is linear scRGB, so
-        // feed the linearised value (sRGB 0.12 -> linear ~0.0127) lifted to
+        // feed the linearized value (sRGB 0.12 -> linear ~0.0127) lifted to
         // the same SDR reference white as the UI/preview draws; otherwise
         // it's already in the sRGB-encoded space the SDR backbuffer expects.
         const float bgSrgb[4]   = {0.12f,   0.12f,   0.12f,   1.0f};

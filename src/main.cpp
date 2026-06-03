@@ -72,7 +72,9 @@ std::vector<uint8_t> MakeToastThumbnail(const sundial::Frame& frame,
                                         const sundial::TonemapParams& tonemap,
                                         uint32_t& outW, uint32_t& outH) {
     ComputeThumbSize(frame.width, frame.height, outW, outH);
-    if (outW == 0 || outH == 0) return {};
+    if (outW == 0 || outH == 0) {
+        return {};
+    }
     // `small` is a Windows COM IDL typedef (rpcndr.h) - avoid that name.
     sundial::Frame thumb = sundial::Resize(frame, outW, outH);
     if (thumb.isHdr) {
@@ -175,7 +177,9 @@ void SaveAndNotify(const sundial::Frame& frame,
             }
             wrotePng = true;
             wrote.push_back(L".png");
-            if (selectInExplorer.empty()) selectInExplorer = pngFile.wstring();
+            if (selectInExplorer.empty()) {
+                selectInExplorer = pngFile.wstring();
+            }
         };
 
         if (formats.jxr && frame.isHdr) {
@@ -188,17 +192,23 @@ void SaveAndNotify(const sundial::Frame& frame,
             sundial::SaveAvifHdr(frame, tonemap, avifFile.wstring(),
                                  formats.avifMode);
             wrote.push_back(L".avif");
-            if (selectInExplorer.empty()) selectInExplorer = avifFile.wstring();
+            if (selectInExplorer.empty()) {
+                selectInExplorer = avifFile.wstring();
+            }
         }
 #endif
 #ifdef SUNDIAL_HAS_ULTRAHDR
         if (formats.ultraHdrJpeg && frame.isHdr) {
             sundial::SaveUltraHdrJpeg(frame, tonemap, jpgFile.wstring());
             wrote.push_back(L".jpg");
-            if (selectInExplorer.empty()) selectInExplorer = jpgFile.wstring();
+            if (selectInExplorer.empty()) {
+                selectInExplorer = jpgFile.wstring();
+            }
         }
 #endif
-        if (formats.png) writePng();
+        if (formats.png) {
+            writePng();
+        }
 
         // Guarantee a snapshot always produces something. If only HDR formats
         // were enabled but the capture is SDR (or every enabled format was
@@ -211,7 +221,9 @@ void SaveAndNotify(const sundial::Frame& frame,
 
         std::wstring list = stem;  // "name.jxr + .png + .jpg"
         for (size_t i = 0; i < wrote.size(); ++i) {
-            if (i) list += L" + ";
+            if (i) {
+                list += L" + ";
+            }
             list += wrote[i];
         }
         const wchar_t* prefix = frame.isHdr ? L"HDR saved  -  " : L"Saved  -  ";
@@ -238,7 +250,9 @@ void SaveAndNotify(const sundial::Frame& frame,
     } else {
         auto onClick = [editPath] {
             wchar_t* heapPath = _wcsdup(editPath.c_str());
-            if (!heapPath) return;
+            if (!heapPath) {
+                return;
+            }
             if (!PostThreadMessageW(g_mainThreadId, kMsgEditFile, 0,
                                     reinterpret_cast<LPARAM>(heapPath))) {
                 free(heapPath);
@@ -412,14 +426,18 @@ void SpawnEditorForFrame(const sundial::Frame& frame,
 void SweepStaleHandoffTemps() {
     wchar_t tempDir[MAX_PATH];
     DWORD n = GetTempPathW(MAX_PATH, tempDir);
-    if (n == 0 || n >= MAX_PATH) return;
+    if (n == 0 || n >= MAX_PATH) {
+        return;
+    }
     std::error_code ec;
     const auto cutoff =
         std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
     for (std::filesystem::directory_iterator it(tempDir, ec), end;
          it != end && !ec; it.increment(ec)) {
         const auto& p = it->path();
-        if (p.filename().wstring().rfind(L"sundial_handoff_", 0) != 0) continue;
+        if (p.filename().wstring().rfind(L"sundial_handoff_", 0) != 0) {
+            continue;
+        }
         std::error_code tec;
         if (std::filesystem::last_write_time(p, tec) < cutoff && !tec) {
             std::filesystem::remove(p, tec);
@@ -443,7 +461,9 @@ std::wstring PickImageToOpen(HWND owner) {
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = L"Edit Image";
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-    if (GetOpenFileNameW(&ofn)) return std::wstring(fileName);
+    if (GetOpenFileNameW(&ofn)) {
+        return std::wstring(fileName);
+    }
     return std::wstring{};
 }
 
@@ -470,7 +490,9 @@ void EditExistingFile(sundial::AppSettings& settings,
     defaultSave.replace_extension(L".png");
     auto result =
         sundial::RunEditor(frame, settings, defaultSave.wstring());
-    if (!result.saved) return;
+    if (!result.saved) {
+        return;
+    }
     settings.tonemap = result.updatedSettings.tonemap;
     settings.snapshot = result.updatedSettings.snapshot;
     sundial::SaveSettings(settings);
@@ -508,7 +530,9 @@ void EditCapturedTemp(sundial::AppSettings& settings,
 
     sundial::SeedTonemapForFrame(settings.tonemap, frame);
     auto result = sundial::RunEditor(frame, settings);  // empty save target
-    if (!result.saved) return;
+    if (!result.saved) {
+        return;
+    }
     settings.tonemap = result.updatedSettings.tonemap;
     settings.snapshot = result.updatedSettings.snapshot;
     sundial::SaveSettings(settings);
@@ -526,7 +550,9 @@ void EditCapturedTemp(sundial::AppSettings& settings,
 void RunEditImageFlow(sundial::AppSettings& settings) {
     (void)settings;
     std::wstring path = PickImageToOpen(nullptr);
-    if (path.empty()) return;
+    if (path.empty()) {
+        return;
+    }
     // Open the file in a separate editor process so the tray keeps running.
     SpawnEditorForFile(path);
 }
@@ -630,11 +656,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 // so even though we (the new, foreground process) are exiting.
                 DWORD pid = 0;
                 GetWindowThreadProcessId(running, &pid);
-                if (pid) AllowSetForegroundWindow(pid);
+                if (pid) {
+                    AllowSetForegroundWindow(pid);
+                }
                 PostMessageW(running, sundial::TrayShowToolbarMessage(), 0, 0);
             }
         }
-        if (instanceMutex) CloseHandle(instanceMutex);
+        if (instanceMutex) {
+            CloseHandle(instanceMutex);
+        }
         CoUninitialize();
         return 0;
     }

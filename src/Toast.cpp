@@ -32,7 +32,9 @@ struct ToastData {
 // kThumbMaxW x kThumbMaxH container. Centered horizontally + vertically.
 RECT ThumbRect(const ToastData& d) {
     RECT r{};
-    if (d.previewBgra.empty() || d.previewW == 0 || d.previewH == 0) return r;
+    if (d.previewBgra.empty() || d.previewW == 0 || d.previewH == 0) {
+        return r;
+    }
     const int boxX = kPadding;
     const int boxY = kPadding;
     const int dstW = int(d.previewW);
@@ -45,7 +47,9 @@ RECT ThumbRect(const ToastData& d) {
 }
 
 void DrawThumbnail(HDC hdc, const ToastData& d) {
-    if (d.previewBgra.empty()) return;
+    if (d.previewBgra.empty()) {
+        return;
+    }
     const RECT r = ThumbRect(d);
 
     // Subtle border around the thumbnail so it reads as a panel even on
@@ -84,7 +88,9 @@ LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONUP: {
             auto* d = reinterpret_cast<ToastData*>(
                 GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-            if (d && d->onClick) d->onClick();
+            if (d && d->onClick) {
+                d->onClick();
+            }
             DestroyWindow(hwnd);
             return 0;
         }
@@ -120,7 +126,9 @@ LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DeleteObject(pen);
 
             const bool hasThumb = d && !d->previewBgra.empty();
-            if (hasThumb) DrawThumbnail(hdc, *d);
+            if (hasThumb) {
+                DrawThumbnail(hdc, *d);
+            }
 
             SetBkMode(hdc, TRANSPARENT);
 
@@ -200,7 +208,9 @@ DWORD WINAPI ToastThread(LPVOID param) {
         x, y, kBaseWidth, kBaseHeight,
         nullptr, nullptr, GetModuleHandleW(nullptr), data.get());
 
-    if (!hwnd) return 1;
+    if (!hwnd) {
+        return 1;
+    }
 
     SetLayeredWindowAttributes(hwnd, 0, 235, LWA_ALPHA);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);

@@ -11,7 +11,7 @@ namespace sundial {
 void RegisterImageAssociations(const std::wstring& exePath);
 
 // Show the system "choose folder" dialog, seeded at `seedFolder` (if it
-// exists). Returns the chosen absolute path, or an empty string if cancelled.
+// exists). Returns the chosen absolute path, or an empty string if canceled.
 // `owner` may be null. Shared by the toolbar and editor settings UIs.
 std::wstring PickFolderDialog(void* owner, const std::wstring& seedFolder);
 
