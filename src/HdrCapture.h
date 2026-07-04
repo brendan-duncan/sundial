@@ -19,6 +19,15 @@ struct TonemapParams;  // Settings.h
 
 Frame CaptureFullScreen();
 
+// Query Windows for the SDR reference white level (in nits) of the monitor
+// named by `gdiDeviceName` (a GDI device string like L"\\.\\DISPLAY1", as found
+// in DXGI_OUTPUT_DESC::DeviceName / MONITORINFOEXW::szDevice). This is the
+// user's Settings > Display > HDR > "SDR content brightness". Returns 0 on
+// failure so callers can fall back to the 80-nit scRGB default. Used both at
+// capture time and by the editor to lift its SDR preview/UI to the display's
+// SDR white on an scRGB HDR backbuffer.
+float QuerySdrWhiteLevelNits(const wchar_t* gdiDeviceName);
+
 // Seed display-dependent tonemap anchors from a freshly captured/loaded frame
 // so each capture starts matched to Windows Game Bar's HDR-to-SDR conversion:
 // HDR sources get the OS SDR-white level + EDID peak as BT.2390 anchors (HDR

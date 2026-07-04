@@ -1,3 +1,7 @@
+# 1.4.1
+
+* SDR display was too dark.
+
 # 1.4.0
 
 * **Settings dialog** — the capture toolbar's **Settings** button now opens a

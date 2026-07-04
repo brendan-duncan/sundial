@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sundial VERSION 1.4.0 LANGUAGES CXX)
+project(sundial VERSION 1.4.1 LANGUAGES CXX)
 
 # App version shown in the About box. Defaults to the project() version; CI and
 # tools/release.ps1 override it with the release tag (-DSUNDIAL_VERSION=x.y.z).

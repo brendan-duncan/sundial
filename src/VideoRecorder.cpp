@@ -80,48 +80,9 @@ ComPtr<IDXGIOutput6> GetPrimaryOutput6(ComPtr<IDXGIAdapter1>& outAdapter) {
     throw RecorderError{"No primary desktop output found"};
 }
 
-float QuerySdrWhiteLevelNits(const wchar_t* gdiName) {
-    UINT32 pathCount = 0, modeCount = 0;
-    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount,
-                                    &modeCount) != ERROR_SUCCESS) {
-        return 0.0f;
-    }
-    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
-    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
-    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(),
-                           &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) {
-        return 0.0f;
-    }
-    for (UINT32 i = 0; i < pathCount; ++i) {
-        DISPLAYCONFIG_SOURCE_DEVICE_NAME src{};
-        src.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-        src.header.size = sizeof(src);
-        src.header.adapterId = paths[i].sourceInfo.adapterId;
-        src.header.id = paths[i].sourceInfo.id;
-        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) {
-            continue;
-        }
-        if (wcscmp(src.viewGdiDeviceName, gdiName) != 0) {
-            continue;
-        }
-        struct LocalSdrWhiteLevel {
-            DISPLAYCONFIG_DEVICE_INFO_HEADER header;
-            ULONG SDRWhiteLevel;
-        };
-        constexpr DISPLAYCONFIG_DEVICE_INFO_TYPE kGetSdrWhite =
-            static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(11);
-        LocalSdrWhiteLevel wl{};
-        wl.header.type = kGetSdrWhite;
-        wl.header.size = sizeof(wl);
-        wl.header.adapterId = paths[i].targetInfo.adapterId;
-        wl.header.id = paths[i].targetInfo.id;
-        if (DisplayConfigGetDeviceInfo(&wl.header) != ERROR_SUCCESS) {
-            return 0.0f;
-        }
-        return wl.SDRWhiteLevel * 80.0f / 1000.0f;
-    }
-    return 0.0f;
-}
+// QuerySdrWhiteLevelNits is shared with the capture/editor paths - see
+// HdrCapture.h (this file's copy was removed to avoid an ambiguous overload
+// once the function became public).
 
 // Mirror of main.cpp's SeedTonemapForFrame so a recording's HDR->SDR look
 // matches a screenshot taken on the same display.

@@ -25,6 +25,8 @@ void ThrowIfFailed(HRESULT hr, const char* what) {
     }
 }
 
+}  // namespace
+
 // Query Windows for the SDR white level of the monitor matching `gdiName`
 // (a GDI device name like "\\.\DISPLAY1"). Returns 0 on failure so the
 // caller can fall back to the 80-nit scRGB default.
@@ -81,6 +83,8 @@ float QuerySdrWhiteLevelNits(const wchar_t* gdiName) {
     }
     return 0.0f;
 }
+
+namespace {
 
 // Walk every adapter's outputs to find the one Windows considers the primary
 // monitor. EnumAdapters(0)/EnumOutputs(0) is not reliable: on hybrid-GPU

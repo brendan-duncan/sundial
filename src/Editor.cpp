@@ -364,6 +364,26 @@ bool DisplayIsHdr(IDXGIAdapter* adapter, HWND hwnd) {
     return false;
 }
 
+// SDR reference white (nits) of the monitor that currently contains `hwnd`, or
+// 0 if it can't be determined. Used to lift the editor's SDR preview + UI to
+// the display's SDR white on an scRGB HDR backbuffer. We query the live display
+// rather than trusting the frame's sdrWhiteLevelNits: a loaded file doesn't
+// carry it (LoadFrameFromFile leaves the 80-nit default, which would sink the
+// SDR view to 80 nits and read as "darker than every other viewer"), and even a
+// fresh capture may now be on a different monitor than it was taken on.
+float EditorMonitorSdrWhiteNits(HWND hwnd) {
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+    if (!mon) {
+        return 0.0f;
+    }
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, reinterpret_cast<LPMONITORINFO>(&mi))) {
+        return 0.0f;
+    }
+    return QuerySdrWhiteLevelNits(mi.szDevice);
+}
+
 bool CreateDeviceAndSwapChain(EditorContext& ctx) {
     UINT flags = 0;
     D3D_FEATURE_LEVEL fl{};
@@ -1878,10 +1898,17 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
     if (ctx.hdrMode) {
         // Lift the UI + SDR preview from scRGB's fixed 80-nit white up to the
         // display's SDR reference white so the SDR preview matches its
-        // non-HDR appearance. Clamp to [1, 6.25] (80..500 nits) against a
-        // missing/garbage OS value.
-        const float nits =
-            source.sdrWhiteLevelNits > 0.0f ? source.sdrWhiteLevelNits : 80.0f;
+        // non-HDR appearance. Query the editor's *current* monitor first: a
+        // file loaded via LoadFrameFromFile carries no SDR-white metadata (it
+        // defaults to 80), which would leave the SDR view/UI stuck at 80 nits
+        // and reading as darker than the same file in any other viewer. Fall
+        // back to the frame's value, then to 80. Clamp to [1, 6.25]
+        // (80..500 nits) against a missing/garbage OS value.
+        float nits = EditorMonitorSdrWhiteNits(ctx.hwnd);
+        if (nits <= 0.0f) {
+            nits = source.sdrWhiteLevelNits > 0.0f ? source.sdrWhiteLevelNits
+                                                   : 80.0f;
+        }
         ctx.hdrPipeline.sdrWhiteScale =
             std::clamp(nits / 80.0f, 1.0f, 6.25f);
     }
