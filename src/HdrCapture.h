@@ -17,7 +17,11 @@ struct Frame {
 
 struct TonemapParams;  // Settings.h
 
-Frame CaptureFullScreen();
+// `firstFrame` takes the earliest non-black frame the duplication hands back
+// instead of waiting for a fresh present. Use it when capturing before any of
+// our UI has been shown, so transient on-screen state (tooltips, hover
+// highlights) isn't lost to a repaint that lands while we wait.
+Frame CaptureFullScreen(bool firstFrame = false);
 
 // Query Windows for the SDR reference white level (in nits) of the monitor
 // named by `gdiDeviceName` (a GDI device string like L"\\.\\DISPLAY1", as found

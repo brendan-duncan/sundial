@@ -1,6 +1,23 @@
+# 1.4.3
+
+* **Tooltips and hover states are captured** — like Snipping Tool, the screen
+  is now grabbed the moment the capture hotkey is pressed, before Sundial's
+  toolbar takes focus and dismisses transient UI. While you pick an area the
+  overlay shows that frozen screen instead of the live desktop, so what you
+  select is exactly what gets saved. Record still works on the live desktop.
+* Faster HDR-to-SDR conversion: the tonemap now runs across all CPU cores,
+  speeding up the frozen overlay and HDR saves.
+
+# 1.4.2
+
+* The editor's SDR preview and UI were too dark on HDR displays, most
+  noticeably for files opened from disk (which carry no SDR-white level). The
+  editor now uses the current monitor's SDR content brightness.
+
 # 1.4.1
 
-* SDR display was too dark.
+* Fixed intermittent all-black screenshots: the capture could grab the screen
+  before Windows had finished drawing it.
 
 # 1.4.0
 

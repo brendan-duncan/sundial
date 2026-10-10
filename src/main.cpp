@@ -323,13 +323,14 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
     const std::wstring prevOutputFolder = settings.outputFolder;
 
     // Grab the screen before any of our UI appears, like Snipping Tool does.
-    // Showing the toolbar steals the foreground and the user then moves the
-    // mouse, both of which dismiss transient UI (tooltips, hover states,
-    // open menus) - capturing afterwards would lose them. If this early grab
-    // fails, fall back to capturing once the toolbar closes.
+    // Showing the toolbar steals the foreground, which dismisses transient UI
+    // (tooltips, hover states) - capturing afterwards would lose them. The
+    // toolbar shows this still while the user selects, so what they see is
+    // what gets saved. If this early grab fails, fall back to the live overlay
+    // and capture once the toolbar closes.
     std::optional<sundial::Frame> preCapture;
     try {
-        preCapture = sundial::CaptureFullScreen();
+        preCapture = sundial::CaptureFullScreen(/*firstFrame=*/true);
     } catch (const std::exception&) {
     }
     auto takeFrame = [&]() -> sundial::Frame {
@@ -337,7 +338,8 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
                           : sundial::CaptureFullScreen();
     };
 
-    auto result = sundial::ShowToolbar(settings);
+    auto result =
+        sundial::ShowToolbar(settings, preCapture ? &*preCapture : nullptr);
     if (settings.editOnCapture != prevEditOnCapture ||
         settings.snapshot.png != prevSnapshot.png ||
         settings.snapshot.jxr != prevSnapshot.jxr ||

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
 
 namespace sundial {
 namespace {
@@ -456,66 +457,91 @@ std::vector<uint8_t> TonemapToBgra8(const Frame& hdr,
         ratio_b = curveB / std::max(avgB, 1e-5f);
     }
 
-    for (uint32_t y = 0; y < hdr.height; ++y) {
-        for (uint32_t x = 0; x < hdr.width; ++x) {
-            float r, g, b;
-            readLinear(y, x, r, g, b);
-            if (sharp > 0.0f) {
-                float rs = 0, gs = 0, bs = 0;
-                int count = 0;
-                auto acc = [&](uint32_t yy, uint32_t xx) {
-                    float rr, gg, bb;
-                    readLinear(yy, xx, rr, gg, bb);
-                    rs += rr; gs += gg; bs += bb; ++count;
-                };
-                if (y > 0) {
-                    acc(y - 1, x);
+    // Rows are independent (sharpen only reads neighbors from the source), so
+    // split them across cores: a 4K HDR frame takes ~1s single-threaded,
+    // which is too slow for the frozen-screen overlay shown at hotkey time.
+    auto processRows = [&](uint32_t yBegin, uint32_t yEnd) {
+        for (uint32_t y = yBegin; y < yEnd; ++y) {
+            for (uint32_t x = 0; x < hdr.width; ++x) {
+                float r, g, b;
+                readLinear(y, x, r, g, b);
+                if (sharp > 0.0f) {
+                    float rs = 0, gs = 0, bs = 0;
+                    int count = 0;
+                    auto acc = [&](uint32_t yy, uint32_t xx) {
+                        float rr, gg, bb;
+                        readLinear(yy, xx, rr, gg, bb);
+                        rs += rr; gs += gg; bs += bb; ++count;
+                    };
+                    if (y > 0) {
+                        acc(y - 1, x);
+                    }
+                    if (y + 1 < hdr.height) {
+                        acc(y + 1, x);
+                    }
+                    if (x > 0) {
+                        acc(y, x - 1);
+                    }
+                    if (x + 1 < hdr.width) {
+                        acc(y, x + 1);
+                    }
+                    if (count > 0) {
+                        const float inv = 1.0f / float(count);
+                        const float amt = sharp * 2.0f;
+                        r += (r - rs * inv) * amt;
+                        g += (g - gs * inv) * amt;
+                        b += (b - bs * inv) * amt;
+                        r = std::max(0.0f, r);
+                        g = std::max(0.0f, g);
+                        b = std::max(0.0f, b);
+                    }
                 }
-                if (y + 1 < hdr.height) {
-                    acc(y + 1, x);
-                }
-                if (x > 0) {
-                    acc(y, x - 1);
-                }
-                if (x + 1 < hdr.width) {
-                    acc(y, x + 1);
-                }
-                if (count > 0) {
-                    const float inv = 1.0f / float(count);
-                    const float amt = sharp * 2.0f;
-                    r += (r - rs * inv) * amt;
-                    g += (g - gs * inv) * amt;
-                    b += (b - bs * inv) * amt;
-                    r = std::max(0.0f, r);
-                    g = std::max(0.0f, g);
-                    b = std::max(0.0f, b);
-                }
-            }
-            preCurve(r, g, b);
+                preCurve(r, g, b);
 
-            if (localStrength > 0.0f) {
-                const float r_local = std::clamp(r * ratio_r, 0.0f, 1.0f);
-                const float g_local = std::clamp(g * ratio_g, 0.0f, 1.0f);
-                const float b_local = std::clamp(b * ratio_b, 0.0f, 1.0f);
-                float r_global = r, g_global = g, b_global = b;
-                ApplyCurveTriplet(r_global, g_global, b_global, params.curve,
-                                  params.kneePoint, params.highlightDesat,
-                                  params.sourcePeakNits);
-                r = r_global + (r_local - r_global) * localStrength;
-                g = g_global + (g_local - g_global) * localStrength;
-                b = b_global + (b_local - b_global) * localStrength;
-            } else {
-                ApplyCurveTriplet(r, g, b, params.curve, params.kneePoint,
-                                  params.highlightDesat, params.sourcePeakNits);
-            }
+                if (localStrength > 0.0f) {
+                    const float r_local = std::clamp(r * ratio_r, 0.0f, 1.0f);
+                    const float g_local = std::clamp(g * ratio_g, 0.0f, 1.0f);
+                    const float b_local = std::clamp(b * ratio_b, 0.0f, 1.0f);
+                    float r_global = r, g_global = g, b_global = b;
+                    ApplyCurveTriplet(r_global, g_global, b_global, params.curve,
+                                      params.kneePoint, params.highlightDesat,
+                                      params.sourcePeakNits);
+                    r = r_global + (r_local - r_global) * localStrength;
+                    g = g_global + (g_local - g_global) * localStrength;
+                    b = b_global + (b_local - b_global) * localStrength;
+                } else {
+                    ApplyCurveTriplet(r, g, b, params.curve, params.kneePoint,
+                                      params.highlightDesat, params.sourcePeakNits);
+                }
 
-            postCurve(r, g, b);
-            const size_t i = (size_t(y) * hdr.width + x) * 4;
-            out[i + 0] = ToByte(b);
-            out[i + 1] = ToByte(g);
-            out[i + 2] = ToByte(r);
-            out[i + 3] = 255;
+                postCurve(r, g, b);
+                const size_t i = (size_t(y) * hdr.width + x) * 4;
+                out[i + 0] = ToByte(b);
+                out[i + 1] = ToByte(g);
+                out[i + 2] = ToByte(r);
+                out[i + 3] = 255;
+            }
         }
+    };
+
+    const uint32_t threadCount = std::clamp<uint32_t>(
+        std::thread::hardware_concurrency(), 1u,
+        std::max<uint32_t>(1u, hdr.height / 64));
+    if (threadCount <= 1) {
+        processRows(0, hdr.height);
+        return out;
+    }
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount - 1);
+    const uint32_t band = (hdr.height + threadCount - 1) / threadCount;
+    for (uint32_t t = 1; t < threadCount; ++t) {
+        const uint32_t y0 = std::min(hdr.height, t * band);
+        const uint32_t y1 = std::min(hdr.height, y0 + band);
+        workers.emplace_back(processRows, y0, y1);
+    }
+    processRows(0, std::min(hdr.height, band));
+    for (auto& w : workers) {
+        w.join();
     }
     return out;
 }

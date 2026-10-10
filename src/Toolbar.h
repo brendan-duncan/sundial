@@ -1,4 +1,5 @@
 #pragma once
+#include "HdrCapture.h"
 #include "Settings.h"
 
 #include <Windows.h>
@@ -31,6 +32,13 @@ struct ToolbarResult {
 // records the region (HDR->SDR) to an .mp4 until Stop. On success the result
 // is Kind::VideoRecorded with videoPath set; the whole flow stays inside this
 // call, so it only returns once recording has finished or been canceled.
-ToolbarResult ShowToolbar(AppSettings& settings);
+//
+// When `frozen` is given (the screen grabbed just before this call), the
+// overlay shows that still instead of the live desktop while the user picks a
+// screenshot area, like Snipping Tool - so tooltips and other transient UI
+// that our activation dismisses stay visible and match what gets saved.
+// Record switches back to the live desktop.
+ToolbarResult ShowToolbar(AppSettings& settings,
+                          const Frame* frozen = nullptr);
 
 }  // namespace sundial

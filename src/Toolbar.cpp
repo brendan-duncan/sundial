@@ -6,8 +6,10 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "About.h"
 #include "Editor.h"
@@ -16,6 +18,7 @@
 #include "Resource.h"
 #include "SettingsDialog.h"
 #include "ShellIntegration.h"
+#include "Tonemap.h"
 #include "Updater.h"
 #include "Version.h"
 #include "VideoRecorder.h"
@@ -117,6 +120,16 @@ struct ToolbarState {
     ULONGLONG recordStartTick = 0;
     std::unique_ptr<VideoRecorder> recorder;
     std::wstring videoPath;
+
+    // Frozen-screen mode (screenshots): the dim overlay paints a still of the
+    // pre-captured frame instead of letting the live desktop show through, so
+    // what the user selects over is exactly what gets saved - including
+    // tooltips and hover states our own activation would otherwise dismiss.
+    // `frozenDim` is the same image pre-darkened for outside the selection.
+    HBITMAP frozen = nullptr;
+    HBITMAP frozenDim = nullptr;
+    int frozenW = 0;
+    int frozenH = 0;
 };
 
 struct DimState {
@@ -139,6 +152,94 @@ std::wstring Timestamp() {
     swprintf_s(buf, L"%04d%02d%02d_%02d%02d%02d", t.wYear, t.wMonth, t.wDay,
                t.wHour, t.wMinute, t.wSecond);
     return buf;
+}
+
+// Overlay opacity over the live desktop (0-255). Frozen mode bakes the same
+// darkening into frozenDim so both modes look identical.
+constexpr BYTE kDimAlpha = 110;
+
+HBITMAP MakeBgraBitmap(const uint8_t* bgra, int w, int h) {
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;  // top-down, matching Frame row order
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits,
+                                   nullptr, 0);
+    if (bmp && bits) {
+        memcpy(bits, bgra, size_t(w) * h * 4);
+    }
+    return bmp;
+}
+
+void ClearFrozenFrame(ToolbarState& s) {
+    if (s.frozen) {
+        DeleteObject(s.frozen);
+    }
+    if (s.frozenDim) {
+        DeleteObject(s.frozenDim);
+    }
+    s.frozen = s.frozenDim = nullptr;
+    s.frozenW = s.frozenH = 0;
+}
+
+// Build the frozen-screen bitmaps from the pre-captured frame. HDR frames go
+// through the same seeded tonemap a no-edit save would use, so the still
+// matches what ends up on disk.
+void SetFrozenFrame(ToolbarState& s, const Frame& frame,
+                    const TonemapParams& baseTonemap) {
+    std::vector<uint8_t> bgra;
+    if (frame.isHdr) {
+        TonemapParams tm = baseTonemap;
+        SeedTonemapForFrame(tm, frame);
+        bgra = TonemapToBgra8(frame, tm);
+    } else {
+        bgra = frame.pixels;
+    }
+    const int w = int(frame.width);
+    const int h = int(frame.height);
+    s.frozen = MakeBgraBitmap(bgra.data(), w, h);
+    constexpr int kKeep = 255 - kDimAlpha;
+    for (size_t i = 0; i < bgra.size(); i += 4) {
+        bgra[i + 0] = uint8_t(bgra[i + 0] * kKeep / 255);
+        bgra[i + 1] = uint8_t(bgra[i + 1] * kKeep / 255);
+        bgra[i + 2] = uint8_t(bgra[i + 2] * kKeep / 255);
+    }
+    s.frozenDim = MakeBgraBitmap(bgra.data(), w, h);
+    if (!s.frozen || !s.frozenDim) {
+        ClearFrozenFrame(s);
+        return;
+    }
+    s.frozenW = w;
+    s.frozenH = h;
+}
+
+// Apply the dim overlay's layered attributes for the current mode: opaque
+// when it paints the frozen still, otherwise translucent black with the
+// magenta color key punching the selection through to the live desktop.
+void ApplyDimLayering(HWND dim, const ToolbarState& s) {
+    if (s.frozen) {
+        SetLayeredWindowAttributes(dim, 0, 255, LWA_ALPHA);
+    } else {
+        SetLayeredWindowAttributes(dim, RGB(255, 0, 255), kDimAlpha,
+                                   LWA_COLORKEY | LWA_ALPHA);
+    }
+}
+
+// Blit `rc` (overlay client coords) of a frozen bitmap into `dst`, scaling in
+// case the captured frame and the overlay differ in size.
+void BlitFrozen(HDC dst, HDC src, const RECT& rc, int clientW, int clientH,
+                const ToolbarState& s) {
+    const int sx = MulDiv(rc.left, s.frozenW, clientW);
+    const int sy = MulDiv(rc.top, s.frozenH, clientH);
+    const int sw = MulDiv(rc.right, s.frozenW, clientW) - sx;
+    const int sh = MulDiv(rc.bottom, s.frozenH, clientH) - sy;
+    SetStretchBltMode(dst, COLORONCOLOR);
+    StretchBlt(dst, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+               src, sx, sy, sw, sh, SRCCOPY);
 }
 
 RECT NormalizeRect(POINT a, POINT b) {
@@ -751,6 +852,14 @@ void EnterVideoMode(HWND hwnd, ToolbarState* s) {
     // The button rects no longer apply once the window becomes the hint /
     // control bar, so drop the per-button tooltips.
     DestroyButtonTooltips(s);
+    // Recording works on the live desktop: drop the frozen still and go back
+    // to the translucent overlay before the user picks a region.
+    if (s->frozen) {
+        ClearFrozenFrame(*s);
+        if (s->dimHwnd) {
+            ApplyDimLayering(s->dimHwnd, *s);
+        }
+    }
     s->phase = VPhase::PickRegion;
     s->hasRect = false;
     const int x = s->originX + (s->monW - kHintW) / 2;
@@ -1041,10 +1150,20 @@ void PaintDim(HWND hwnd, const DimState& d) {
         return;
     }
 
-    // Dim background (alpha applied by the layered window).
-    HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
-    FillRect(mem, &client, bg);
-    DeleteObject(bg);
+    // Dim background: either the pre-darkened frozen still, or plain black that
+    // the layered window's alpha turns into a tint over the live desktop.
+    const bool frozen = s && s->frozen;
+    HDC frozenDc = nullptr;
+    HGDIOBJ oldFrozen = nullptr;
+    if (frozen) {
+        frozenDc = CreateCompatibleDC(hdc);
+        oldFrozen = SelectObject(frozenDc, s->frozenDim);
+        BlitFrozen(mem, frozenDc, client, client.right, client.bottom, *s);
+    } else {
+        HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(mem, &client, bg);
+        DeleteObject(bg);
+    }
 
     // Determine the selection rect to show, and whether handles/countdown.
     RECT sel{};
@@ -1068,15 +1187,24 @@ void PaintDim(HWND hwnd, const DimState& d) {
     }
 
     if (haveSel) {
-        HBRUSH clear = CreateSolidBrush(RGB(255, 0, 255));
-        FillRect(mem, &sel, clear);
-        DeleteObject(clear);
+        if (frozen) {
+            SelectObject(frozenDc, s->frozen);
+            BlitFrozen(mem, frozenDc, sel, client.right, client.bottom, *s);
+        } else {
+            HBRUSH clear = CreateSolidBrush(RGB(255, 0, 255));
+            FillRect(mem, &sel, clear);
+            DeleteObject(clear);
+        }
         DrawSelectionChrome(mem, sel, handles);
         if (s && s->phase == VPhase::Countdown) {
             DrawCountdown(mem, sel, s->countdown);
         } else {
             DrawSizeLabel(mem, sel);
         }
+    }
+    if (frozenDc) {
+        SelectObject(frozenDc, oldFrozen);
+        DeleteDC(frozenDc);
     }
 
     BitBlt(hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
@@ -1297,8 +1425,7 @@ HWND CreateDimOverlay(DimState* state) {
     if (!dim) {
         return nullptr;
     }
-    SetLayeredWindowAttributes(dim, RGB(255, 0, 255), 110,
-                               LWA_COLORKEY | LWA_ALPHA);
+    ApplyDimLayering(dim, *state->toolbarState);
     // The recording border lives on this window; never let it into the video.
     ExcludeFromCapture(dim);
     ShowWindow(dim, SW_SHOWNA);
@@ -1329,7 +1456,7 @@ void EnsureClassRegistered() {
 
 }  // namespace
 
-ToolbarResult ShowToolbar(AppSettings& settings) {
+ToolbarResult ShowToolbar(AppSettings& settings, const Frame* frozen) {
     EnsureClassRegistered();
 
     MONITORINFO mi{};
@@ -1346,6 +1473,9 @@ ToolbarResult ShowToolbar(AppSettings& settings) {
     state.originY = mi.rcMonitor.top;
     state.monW = mi.rcMonitor.right - mi.rcMonitor.left;
     state.monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    if (frozen) {
+        SetFrozenFrame(state, *frozen, settings.tonemap);
+    }
 
     DimState dimState{};
     dimState.toolbarState = &state;
@@ -1360,6 +1490,7 @@ ToolbarResult ShowToolbar(AppSettings& settings) {
         if (dim) {
             DestroyWindow(dim);
         }
+        ClearFrozenFrame(state);
         return ToolbarResult{};
     }
     // The Start/Stop control bar can sit over the selection (e.g. a tall
@@ -1392,6 +1523,7 @@ ToolbarResult ShowToolbar(AppSettings& settings) {
     if (dim) {
         DestroyWindow(dim);
     }
+    ClearFrozenFrame(state);
 
     ToolbarResult result;
     result.kind = state.kind;

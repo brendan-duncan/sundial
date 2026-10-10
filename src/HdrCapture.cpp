@@ -165,7 +165,7 @@ bool FrameLooksBlack(const Frame& f) {
 
 }  // namespace
 
-Frame CaptureFullScreen() {
+Frame CaptureFullScreen(bool firstFrame) {
     auto output6 = GetPrimaryOutput6();
 
     DXGI_OUTPUT_DESC1 outDesc{};
@@ -306,7 +306,7 @@ Frame CaptureFullScreen() {
         // Best case: a freshly-composited, non-black frame. After a short grace
         // period accept any non-black frame; as a hard backstop accept whatever
         // we have so we never spin forever on a legitimately black screen.
-        if (!black && (freshPresent || attempt >= 3)) {
+        if (!black && (firstFrame || freshPresent || attempt >= 3)) {
             break;
         }
         if (attempt >= 12) {
