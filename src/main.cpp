@@ -8,6 +8,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "About.h"
@@ -320,6 +321,22 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
     const sundial::SnapshotFormats prevSnapshot = settings.snapshot;
     const bool prevAutoCopy = settings.autoCopyCapture;
     const std::wstring prevOutputFolder = settings.outputFolder;
+
+    // Grab the screen before any of our UI appears, like Snipping Tool does.
+    // Showing the toolbar steals the foreground and the user then moves the
+    // mouse, both of which dismiss transient UI (tooltips, hover states,
+    // open menus) - capturing afterwards would lose them. If this early grab
+    // fails, fall back to capturing once the toolbar closes.
+    std::optional<sundial::Frame> preCapture;
+    try {
+        preCapture = sundial::CaptureFullScreen();
+    } catch (const std::exception&) {
+    }
+    auto takeFrame = [&]() -> sundial::Frame {
+        return preCapture ? std::move(*preCapture)
+                          : sundial::CaptureFullScreen();
+    };
+
     auto result = sundial::ShowToolbar(settings);
     if (settings.editOnCapture != prevEditOnCapture ||
         settings.snapshot.png != prevSnapshot.png ||
@@ -331,10 +348,10 @@ void RunToolbarFlow(sundial::AppSettings& settings) {
     }
     switch (result.kind) {
         case sundial::ToolbarResult::Kind::FullScreen:
-            HandleCapture(settings, sundial::CaptureFullScreen());
+            HandleCapture(settings, takeFrame());
             break;
         case sundial::ToolbarResult::Kind::Area: {
-            auto frame = sundial::CaptureFullScreen();
+            auto frame = takeFrame();
             const uint32_t x = uint32_t(std::max(0L, result.area.left));
             const uint32_t y = uint32_t(std::max(0L, result.area.top));
             const uint32_t w = uint32_t(result.area.right - result.area.left);
