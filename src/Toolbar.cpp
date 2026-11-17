@@ -195,6 +195,7 @@ void SetFrozenFrame(ToolbarState& s, const Frame& frame,
     if (frame.isHdr) {
         TonemapParams tm = baseTonemap;
         SeedTonemapForFrame(tm, frame);
+        tm.outputGamut = OutputGamut::Srgb;  // drawn on screen via GDI
         bgra = TonemapToBgra8(frame, tm);
     } else {
         bgra = frame.pixels;

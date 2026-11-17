@@ -1,3 +1,27 @@
+# Unreleased
+
+* **Better HDR-to-SDR color**: wide-gamut colors (HDR games, P3 video and
+  photos) no longer shift hue. Saturated reds used to turn orange and greens
+  yellow; they now keep their hue and are desaturated only as much as
+  needed. Bright saturated highlights roll off smoothly instead of clipping
+  into flat patches.
+* **No more banding** in smooth gradients (skies, glows, dark scenes) in
+  SDR output: it's now finely dithered, while flat UI and text stay
+  pixel-exact.
+* **Display P3 output** — new **Output > Gamut** option in the editor keeps
+  wide-gamut colors in saved PNGs (with an embedded color profile), Ultra HDR
+  JPEGs and gain-map AVIFs. PNGs are now color-tagged in general.
+* **HDR PNG** — new snapshot format (and Save As option): a lossless 16-bit
+  PQ PNG (`_hdr.png`) that Chrome, Edge and Windows Photos show as HDR.
+  Sundial re-opens it as HDR.
+* **Lossless JPEG XR** — `.jxr` files (and the capture-to-editor hand-off)
+  are now lossless, so re-toning starts from the exact captured pixels.
+* **Edge-aware local tonemap** — the editor's **Local tonemap** slider now
+  compresses bright regions on their own, so dark UI next to bright HDR
+  content keeps its contrast, without halos.
+* **SDR white** goes up to 480 nits, matching the top of Windows' SDR
+  content brightness slider; **Auto** now handles very bright displays.
+
 # 1.4.3
 
 * **Tooltips and hover states are captured** — like Snipping Tool, the screen

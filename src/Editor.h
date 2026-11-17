@@ -15,6 +15,9 @@ struct EditorResult {
     // verbatim). False for a plain Save / capture, where outputPath is a .png
     // base that fans out into every enabled snapshot format.
     bool explicitPath = false;
+    // With explicitPath: the user picked the "HDR PNG (16-bit PQ)" Save As
+    // filter, so the .png is written as HDR rather than tonemapped SDR.
+    bool explicitHdrPng = false;
 };
 
 // Modal editor: blocks until the user clicks Save or Cancel (or closes the

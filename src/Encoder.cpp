@@ -1,16 +1,23 @@
 #include "Encoder.h"
 
+#include "ColorMath.h"
 #include "Tonemap.h"
 
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <DirectXPackedVector.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
 #include <stdexcept>
 #include <system_error>
+#include <vector>
 
 #if defined(SUNDIAL_HAS_ULTRAHDR)
 #include <DirectXPackedVector.h>
@@ -57,7 +64,8 @@ void EncodeToStream(IStream* stream,
                     uint32_t stride,
                     const uint8_t* pixels,
                     size_t pixelBytes,
-                    bool jxrHdr) {
+                    bool jxrHdr,
+                    const std::vector<uint8_t>* iccProfile = nullptr) {
     auto factory = CreateWic();
 
     ComPtr<IWICBitmapEncoder> encoder;
@@ -72,13 +80,14 @@ void EncodeToStream(IStream* stream,
                   "IWICBitmapEncoder::CreateNewFrame");
 
     if (jxrHdr) {
-        // Near-lossless quality; the JXR codec handles FP16 natively so
-        // we don't need to touch transform options.
+        // Lossless. The .jxr is the HDR master that re-toning (and the
+        // capture -> editor hand-off) starts from, so it must not lose
+        // anything; the JXR codec handles FP16 natively.
         PROPBAG2 opt{};
-        opt.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+        opt.pstrName = const_cast<LPOLESTR>(L"Lossless");
         VARIANT v{};
-        v.vt = VT_R4;
-        v.fltVal = 0.95f;
+        v.vt = VT_BOOL;
+        v.boolVal = VARIANT_TRUE;
         props->Write(1, &opt, &v);
     }
 
@@ -93,6 +102,18 @@ void EncodeToStream(IStream* stream,
     if (requested != pixelFormat) {
         throw std::runtime_error(
             "WIC encoder rejected the requested pixel format");
+    }
+
+    if (iccProfile && !iccProfile->empty()) {
+        // Embedded ICC profile (iCCP chunk for PNG). Best effort: a failure
+        // here leaves the image untagged rather than failing the save.
+        ComPtr<IWICColorContext> cc;
+        if (SUCCEEDED(factory->CreateColorContext(&cc)) &&
+            SUCCEEDED(cc->InitializeFromMemory(
+                iccProfile->data(), static_cast<UINT>(iccProfile->size())))) {
+            IWICColorContext* list[] = {cc.Get()};
+            frame->SetColorContexts(1, list);
+        }
     }
 
     ThrowIfFailed(frame->WritePixels(height, stride,
@@ -120,33 +141,303 @@ void WriteImage(const std::wstring& path,
                    stride, pixels, pixelBytes, jxrHdr);
 }
 
+std::vector<uint8_t> StreamToBytes(IStream* stream) {
+    STATSTG stat{};
+    ThrowIfFailed(stream->Stat(&stat, STATFLAG_NONAME), "IStream::Stat");
+    const size_t size = size_t(stat.cbSize.QuadPart);
+    HGLOBAL hg = nullptr;
+    ThrowIfFailed(GetHGlobalFromStream(stream, &hg), "GetHGlobalFromStream");
+    std::vector<uint8_t> out(size);
+    if (size > 0) {
+        const void* src = GlobalLock(hg);
+        if (!src) {
+            throw std::runtime_error("GlobalLock failed");
+        }
+        std::memcpy(out.data(), src, size);
+        GlobalUnlock(hg);
+    }
+    return out;
+}
+
+// --- PNG color tagging ------------------------------------------------------
+
+uint32_t Crc32(const uint8_t* data, size_t n) {
+    static const auto table = [] {
+        std::vector<uint32_t> t(256);
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) {
+                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            }
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; ++i) {
+        c = table[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+    }
+    return c ^ 0xFFFFFFFFu;
+}
+
+void PutBe32(std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back(uint8_t(x >> 24));
+    v.push_back(uint8_t(x >> 16));
+    v.push_back(uint8_t(x >> 8));
+    v.push_back(uint8_t(x));
+}
+
+void AppendPngChunk(std::vector<uint8_t>& out, const char type[4],
+                    const std::vector<uint8_t>& data) {
+    PutBe32(out, uint32_t(data.size()));
+    const size_t typeAt = out.size();
+    out.insert(out.end(), type, type + 4);
+    out.insert(out.end(), data.begin(), data.end());
+    PutBe32(out, Crc32(out.data() + typeAt, 4 + data.size()));
+}
+
+// Insert ancillary chunks right after IHDR (where sRGB / cICP / cLLi must
+// precede PLTE and IDAT). WIC can't write cICP or cLLi itself.
+void InsertPngChunksAfterIhdr(std::vector<uint8_t>& png,
+                              const std::vector<uint8_t>& chunks) {
+    static const uint8_t kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A,
+                                    0x0A};
+    constexpr size_t kIhdrEnd = 8 + 4 + 4 + 13 + 4;
+    if (png.size() < kIhdrEnd || std::memcmp(png.data(), kSig, 8) != 0 ||
+        std::memcmp(png.data() + 12, "IHDR", 4) != 0) {
+        throw std::runtime_error("unexpected PNG layout from WIC");
+    }
+    png.insert(png.begin() + kIhdrEnd, chunks.begin(), chunks.end());
+}
+
+// Drop every chunk whose type is in `types`. WIC's PNG encoder always writes
+// sRGB + gAMA (or gAMA + cHRM + iCCP from a color context); for an HDR PNG
+// those would contradict its cICP tag in readers that don't know cICP.
+void RemovePngChunks(std::vector<uint8_t>& png,
+                     std::initializer_list<const char*> types) {
+    size_t i = 8;
+    while (i + 12 <= png.size()) {
+        const uint32_t len = (uint32_t(png[i]) << 24) |
+                             (uint32_t(png[i + 1]) << 16) |
+                             (uint32_t(png[i + 2]) << 8) | png[i + 3];
+        const size_t total = size_t(len) + 12;
+        if (i + total > png.size()) {
+            break;
+        }
+        bool drop = false;
+        for (const char* t : types) {
+            drop |= std::memcmp(png.data() + i + 4, t, 4) == 0;
+        }
+        if (drop) {
+            png.erase(png.begin() + i, png.begin() + i + total);
+        } else {
+            i += total;
+        }
+    }
+}
+
+// cICP (PNG 3rd edition): colour primaries, transfer function, matrix (0 =
+// RGB), full range. Values are ITU-T H.273 code points.
+std::vector<uint8_t> CicpChunk(uint8_t primaries, uint8_t transfer) {
+    std::vector<uint8_t> c;
+    AppendPngChunk(c, "cICP", {primaries, transfer, 0, 1});
+    return c;
+}
+
+// ICC v2 display profile for Display P3 (P3 primaries, D65 white) with the
+// given tone response. Colorants are Bradford-adapted to the D50 PCS.
+std::vector<uint8_t> BuildDisplayP3Icc(OutputGamma gamma) {
+    auto be32 = [](std::vector<uint8_t>& v, uint32_t x) { PutBe32(v, x); };
+    auto be16 = [](std::vector<uint8_t>& v, uint16_t x) {
+        v.push_back(uint8_t(x >> 8));
+        v.push_back(uint8_t(x));
+    };
+    auto sig = [](std::vector<uint8_t>& v, const char* s4) {
+        v.insert(v.end(), s4, s4 + 4);
+    };
+    auto xyz = [&](int32_t x, int32_t y, int32_t z) {
+        std::vector<uint8_t> v;
+        sig(v, "XYZ ");
+        be32(v, 0);
+        be32(v, uint32_t(x));
+        be32(v, uint32_t(y));
+        be32(v, uint32_t(z));
+        return v;
+    };
+    auto fx = [](double d) { return int32_t(std::lround(d * 65536.0)); };
+
+    const char* name = gamma == OutputGamma::Srgb      ? "Display P3"
+                       : gamma == OutputGamma::Gamma22 ? "Display P3 (gamma 2.2)"
+                                                       : "Display P3 (linear)";
+    std::vector<uint8_t> desc;
+    sig(desc, "desc");
+    be32(desc, 0);
+    const size_t nameLen = std::strlen(name) + 1;
+    be32(desc, uint32_t(nameLen));
+    desc.insert(desc.end(), name, name + nameLen);
+    be32(desc, 0);  // unicode language
+    be32(desc, 0);  // unicode count
+    be16(desc, 0);  // scriptcode code
+    desc.push_back(0);  // scriptcode count
+    desc.insert(desc.end(), 67, 0);
+
+    std::vector<uint8_t> cprt;
+    sig(cprt, "text");
+    be32(cprt, 0);
+    const char* kCprt = "No copyright, use freely";
+    cprt.insert(cprt.end(), kCprt, kCprt + std::strlen(kCprt) + 1);
+
+    std::vector<uint8_t> trc;
+    sig(trc, "curv");
+    be32(trc, 0);
+    if (gamma == OutputGamma::Linear) {
+        be32(trc, 0);  // identity
+    } else if (gamma == OutputGamma::Gamma22) {
+        be32(trc, 1);
+        be16(trc, uint16_t(std::lround(2.2 * 256.0)));  // u8Fixed8
+    } else {
+        constexpr int kN = 1024;
+        be32(trc, kN);
+        for (int i = 0; i < kN; ++i) {
+            const double e = double(i) / (kN - 1);
+            const double l = e <= 0.04045 ? e / 12.92
+                                          : std::pow((e + 0.055) / 1.055, 2.4);
+            be16(trc, uint16_t(std::lround(l * 65535.0)));
+        }
+    }
+
+    struct Tag {
+        const char* sig;
+        std::vector<uint8_t> data;
+    };
+    std::vector<Tag> tags = {
+        {"desc", desc},
+        {"cprt", cprt},
+        {"wtpt", xyz(fx(0.9642), fx(1.0), fx(0.8249))},
+        {"rXYZ", xyz(fx(0.515119), fx(0.241189), fx(-0.001050))},
+        {"gXYZ", xyz(fx(0.291978), fx(0.692244), fx(0.041879))},
+        {"bXYZ", xyz(fx(0.157103), fx(0.066567), fx(0.784071))},
+        {"rTRC", trc},
+    };
+    // gTRC / bTRC share rTRC's data.
+    const size_t tagCount = tags.size() + 2;
+    const size_t tableBytes = 4 + 12 * tagCount;
+    size_t offset = 128 + tableBytes;
+    std::vector<uint32_t> offsets;
+    for (auto& t : tags) {
+        offsets.push_back(uint32_t(offset));
+        offset += (t.data.size() + 3) & ~size_t(3);
+    }
+    const uint32_t total = uint32_t(offset);
+
+    std::vector<uint8_t> icc;
+    icc.reserve(total);
+    be32(icc, total);
+    be32(icc, 0);            // preferred CMM
+    be32(icc, 0x02100000);   // version 2.1
+    sig(icc, "mntr");
+    sig(icc, "RGB ");
+    sig(icc, "XYZ ");
+    for (int i = 0; i < 6; ++i) {
+        be16(icc, 0);        // date/time (unset)
+    }
+    sig(icc, "acsp");
+    be32(icc, 0);            // platform
+    be32(icc, 0);            // flags
+    be32(icc, 0);            // manufacturer
+    be32(icc, 0);            // model
+    be32(icc, 0);            // attributes (8 bytes)
+    be32(icc, 0);
+    be32(icc, 0);            // rendering intent: perceptual
+    be32(icc, uint32_t(fx(0.9642)));  // PCS illuminant (D50)
+    be32(icc, uint32_t(fx(1.0)));
+    be32(icc, uint32_t(fx(0.8249)));
+    be32(icc, 0);            // creator
+    icc.resize(128, 0);      // profile ID + reserved
+
+    be32(icc, uint32_t(tagCount));
+    for (size_t i = 0; i < tags.size(); ++i) {
+        sig(icc, tags[i].sig);
+        be32(icc, offsets[i]);
+        be32(icc, uint32_t(tags[i].data.size()));
+    }
+    for (const char* shared : {"gTRC", "bTRC"}) {
+        sig(icc, shared);
+        be32(icc, offsets.back());
+        be32(icc, uint32_t(tags.back().data.size()));
+    }
+    for (auto& t : tags) {
+        icc.insert(icc.end(), t.data.begin(), t.data.end());
+        icc.resize((icc.size() + 3) & ~size_t(3), 0);
+    }
+    return icc;
+}
+
+// Encode to PNG bytes in memory, optionally embedding an ICC profile, then
+// insert any extra ancillary chunks after IHDR.
+std::vector<uint8_t> EncodePngBytes(REFWICPixelFormatGUID pixelFormat,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t stride, const uint8_t* pixels,
+                                    size_t pixelBytes,
+                                    const std::vector<uint8_t>* icc,
+                                    const std::vector<uint8_t>& extraChunks) {
+    ComPtr<IStream> stream;
+    ThrowIfFailed(CreateStreamOnHGlobal(nullptr, TRUE, &stream),
+                  "CreateStreamOnHGlobal");
+    EncodeToStream(stream.Get(), GUID_ContainerFormatPng, pixelFormat, width,
+                   height, stride, pixels, pixelBytes, /*jxrHdr=*/false, icc);
+    std::vector<uint8_t> png = StreamToBytes(stream.Get());
+    if (!extraChunks.empty()) {
+        InsertPngChunksAfterIhdr(png, extraChunks);
+    }
+    return png;
+}
+
+void WriteBytesToFile(const std::vector<uint8_t>& bytes,
+                      const std::wstring& path) {
+    std::ofstream file(std::filesystem::path(path), std::ios::binary);
+    bool ok = static_cast<bool>(file);
+    if (ok) {
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+        ok = static_cast<bool>(file);
+    }
+    if (!ok) {
+        throw std::runtime_error("failed writing image file");
+    }
+}
+
+// Write a tonemapped 8-bit BGRA image as a PNG tagged for `params`' output
+// gamut / gamma: Display P3 gets an embedded ICC profile plus cICP. Otherwise
+// WIC's default sRGB + gAMA chunks are left as they always were.
+void WriteTaggedSdrPng(const std::vector<uint8_t>& bgra, uint32_t width,
+                       uint32_t height, const TonemapParams& params,
+                       const std::wstring& path) {
+    std::vector<uint8_t> icc;
+    std::vector<uint8_t> chunks;
+    if (params.outputGamut == OutputGamut::DisplayP3) {
+        icc = BuildDisplayP3Icc(params.outputGamma);
+        const uint8_t transfer =
+            params.outputGamma == OutputGamma::Srgb      ? 13   // sRGB
+            : params.outputGamma == OutputGamma::Gamma22 ? 4    // gamma 2.2
+                                                         : 8;   // linear
+        chunks = CicpChunk(12 /*P3-D65*/, transfer);
+    }
+    WriteBytesToFile(
+        EncodePngBytes(GUID_WICPixelFormat32bppBGRA, width, height, width * 4,
+                       bgra.data(), bgra.size(), icc.empty() ? nullptr : &icc,
+                       chunks),
+        path);
+}
+
 }  // namespace
 
 std::vector<uint8_t> EncodePngToMemory(const uint8_t* bgra, uint32_t width,
                                        uint32_t height) {
-    ComPtr<IStream> stream;
-    ThrowIfFailed(CreateStreamOnHGlobal(nullptr, TRUE, &stream),
-                  "CreateStreamOnHGlobal");
-    EncodeToStream(stream.Get(), GUID_ContainerFormatPng,
-                   GUID_WICPixelFormat32bppBGRA, width, height, width * 4,
-                   bgra, size_t(width) * height * 4, /*jxrHdr=*/false);
-
-    STATSTG stat{};
-    ThrowIfFailed(stream->Stat(&stat, STATFLAG_NONAME), "IStream::Stat");
-    const size_t size = size_t(stat.cbSize.QuadPart);
-
-    HGLOBAL hg = nullptr;
-    ThrowIfFailed(GetHGlobalFromStream(stream.Get(), &hg),
-                  "GetHGlobalFromStream");
-    std::vector<uint8_t> out(size);
-    if (size > 0) {
-        const void* src = GlobalLock(hg);
-        if (src) {
-            std::memcpy(out.data(), src, size);
-            GlobalUnlock(hg);
-        }
-    }
-    return out;
+    // Clipboard content is always sRGB (WIC tags it with an sRGB chunk).
+    return EncodePngBytes(GUID_WICPixelFormat32bppBGRA, width, height,
+                          width * 4, bgra, size_t(width) * height * 4, nullptr,
+                          {});
 }
 
 void SaveJxrHdr(const Frame& f, const std::wstring& path) {
@@ -167,13 +458,61 @@ void SavePngTonemapped(const Frame& f,
     if (!f.isHdr) {
         throw std::logic_error("SavePngTonemapped called on a non-HDR frame");
     }
-    auto sdr = TonemapToBgra8(f, params);
-    const uint32_t stride = f.width * 4;
-    WriteImage(path, GUID_ContainerFormatPng,
-               GUID_WICPixelFormat32bppBGRA,
-               f.width, f.height, stride,
-               sdr.data(), sdr.size(),
-               /*jxrHdr=*/false);
+    WriteTaggedSdrPng(TonemapToBgra8(f, params), f.width, f.height, params,
+                      path);
+}
+
+void SavePngHdrPq(const Frame& f, const TonemapParams& params,
+                  const std::wstring& path) {
+    using namespace DirectX::PackedVector;
+    if (!f.isHdr || f.bytesPerPixel != 8) {
+        throw std::logic_error("SavePngHdrPq called on a non-HDR frame");
+    }
+    // Same HDR rendition as the PQ AVIF: the linear scRGB source with
+    // exposure and per-channel gain applied (tone curve NOT applied), in
+    // absolute nits, converted to Rec.2020 and PQ-encoded at 16 bits.
+    const float ev = std::pow(2.0f, params.exposureEV);
+    const float gain[3] = {80.0f * ev * params.rGain, 80.0f * ev * params.gGain,
+                           80.0f * ev * params.bGain};
+    const size_t pixelCount = size_t(f.width) * f.height;
+    std::vector<uint16_t> rgb16(pixelCount * 3);
+    const HALF* src = reinterpret_cast<const HALF*>(f.pixels.data());
+    float maxCll = 0.0f;
+    double sumFall = 0.0;
+    for (size_t i = 0; i < pixelCount; ++i) {
+        float r = XMConvertHalfToFloat(src[i * 4 + 0]) * gain[0];
+        float g = XMConvertHalfToFloat(src[i * 4 + 1]) * gain[1];
+        float b = XMConvertHalfToFloat(src[i * 4 + 2]) * gain[2];
+        color::Rec709ToRec2020(r, g, b);
+        color::MapNegativesIntoGamut(r, g, b, color::kLuma2020);
+        const float peak = std::min(std::max({r, g, b}), 10000.0f);
+        maxCll = std::max(maxCll, peak);
+        sumFall += peak;
+        rgb16[i * 3 + 0] = uint16_t(
+            std::lround(color::PqOetf(r / 10000.0f) * 65535.0f));
+        rgb16[i * 3 + 1] = uint16_t(
+            std::lround(color::PqOetf(g / 10000.0f) * 65535.0f));
+        rgb16[i * 3 + 2] = uint16_t(
+            std::lround(color::PqOetf(b / 10000.0f) * 65535.0f));
+    }
+    const float maxFall =
+        pixelCount ? float(sumFall / double(pixelCount)) : 0.0f;
+
+    // cICP: BT.2020 primaries (9), PQ transfer (16), RGB, full range.
+    // cLLi: content light level, in units of 0.0001 cd/m^2.
+    std::vector<uint8_t> chunks = CicpChunk(9, 16);
+    std::vector<uint8_t> clli;
+    PutBe32(clli, uint32_t(std::lround(double(maxCll) * 10000.0)));
+    PutBe32(clli, uint32_t(std::lround(double(maxFall) * 10000.0)));
+    AppendPngChunk(chunks, "cLLi", clli);
+
+    std::vector<uint8_t> png = EncodePngBytes(
+        GUID_WICPixelFormat48bppRGB, f.width, f.height, f.width * 6,
+        reinterpret_cast<const uint8_t*>(rgb16.data()),
+        rgb16.size() * sizeof(uint16_t), nullptr, {});
+    RemovePngChunks(png, {"sRGB", "gAMA", "cHRM", "iCCP"});
+    InsertPngChunksAfterIhdr(png, chunks);
+    WriteBytesToFile(png, path);
 }
 
 #if defined(SUNDIAL_HAS_ULTRAHDR)
@@ -225,7 +564,12 @@ void SaveUltraHdrJpeg(const Frame& f,
     // SDR base image: exactly what SavePngTonemapped writes, so an SDR viewer
     // sees the same result. TonemapToBgra8 yields tightly-packed BGRA8; Ultra
     // HDR's 32bppRGBA8888 wants R,G,B,A byte order, so swap R/B as we copy.
-    std::vector<uint8_t> sdrBgra = TonemapToBgra8(f, params);
+    // The base is tagged with the sRGB transfer, so always encode it that way;
+    // primaries follow the chosen output gamut.
+    TonemapParams baseParams = params;
+    baseParams.outputGamma = OutputGamma::Srgb;
+    const bool baseP3 = params.outputGamut == OutputGamut::DisplayP3;
+    std::vector<uint8_t> sdrBgra = TonemapToBgra8(f, baseParams);
     std::vector<uint8_t> sdrRgba(sdrBgra.size());
     for (size_t i = 0; i + 3 < sdrBgra.size(); i += 4) {
         sdrRgba[i + 0] = sdrBgra[i + 2];  // R
@@ -286,7 +630,7 @@ void SaveUltraHdrJpeg(const Frame& f,
 
     uhdr_raw_image_t sdr{};
     sdr.fmt = UHDR_IMG_FMT_32bppRGBA8888;
-    sdr.cg = UHDR_CG_BT_709;
+    sdr.cg = baseP3 ? UHDR_CG_DISPLAY_P3 : UHDR_CG_BT_709;
     sdr.ct = UHDR_CT_SRGB;
     sdr.range = UHDR_CR_FULL_RANGE;
     sdr.w = f.width;
@@ -643,13 +987,20 @@ void SaveAvifHdr(const Frame& f, const TonemapParams& params,
     } else {
         // Gain-map AVIF: SDR base (the tonemapped result, like the PNG / Ultra
         // HDR base) plus an ISO 21496-1 gain map that recovers the HDR.
-        std::vector<uint8_t> sdrBgra = TonemapToBgra8(f, params);
+        // Base tagged sRGB transfer; primaries follow the output gamut.
+        TonemapParams baseParams = params;
+        baseParams.outputGamma = OutputGamma::Srgb;
+        const avifColorPrimaries basePrimaries = static_cast<avifColorPrimaries>(
+            params.outputGamut == OutputGamut::DisplayP3
+                ? AVIF_COLOR_PRIMARIES_SMPTE432
+                : AVIF_COLOR_PRIMARIES_BT709);
+        std::vector<uint8_t> sdrBgra = TonemapToBgra8(f, baseParams);
 
         image.p = avifImageCreate(W, H, 8, AVIF_PIXEL_FORMAT_YUV444);
         if (!image.p) {
             throw std::runtime_error("avifImageCreate failed");
         }
-        image.p->colorPrimaries = AVIF_COLOR_PRIMARIES_BT709;
+        image.p->colorPrimaries = basePrimaries;
         image.p->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
         image.p->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT709;
         image.p->yuvRange = AVIF_RANGE_FULL;
@@ -707,7 +1058,7 @@ void SaveAvifHdr(const Frame& f, const TonemapParams& params,
             throw std::runtime_error("avifGainMapCreate failed");
         }
         const avifResult gr = avifRGBImageComputeGainMap(
-            &baseRgb.img, AVIF_COLOR_PRIMARIES_BT709,
+            &baseRgb.img, basePrimaries,
             AVIF_TRANSFER_CHARACTERISTICS_SRGB, &altRgb.img,
             AVIF_COLOR_PRIMARIES_BT2020, AVIF_TRANSFER_CHARACTERISTICS_LINEAR,
             gainMap, nullptr);
@@ -926,7 +1277,131 @@ void SaveAvifHdr(const Frame&, const TonemapParams&, const std::wstring&,
 }
 #endif
 
+namespace {
+
+// If `path` is a PNG whose cICP chunk declares a PQ or HLG transfer (e.g. our
+// own HDR PNG), decode it to FP16 linear scRGB and return true. WIC knows
+// nothing about cICP and would hand back the raw PQ code values as if they
+// were ordinary image data.
+bool TryLoadHdrPng(const std::wstring& path, Frame& out) {
+    using namespace DirectX::PackedVector;
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    uint8_t sig[8] = {};
+    if (!file.read(reinterpret_cast<char*>(sig), 8) ||
+        std::memcmp(sig, "\x89PNG\r\n\x1a\n", 8) != 0) {
+        return false;
+    }
+    uint8_t primaries = 0, transfer = 0;
+    bool haveCicp = false;
+    for (;;) {
+        uint8_t hdr[8];
+        if (!file.read(reinterpret_cast<char*>(hdr), 8)) {
+            return false;
+        }
+        const uint32_t len = (uint32_t(hdr[0]) << 24) |
+                             (uint32_t(hdr[1]) << 16) |
+                             (uint32_t(hdr[2]) << 8) | hdr[3];
+        if (std::memcmp(hdr + 4, "IDAT", 4) == 0 ||
+            std::memcmp(hdr + 4, "IEND", 4) == 0) {
+            break;
+        }
+        if (std::memcmp(hdr + 4, "cICP", 4) == 0 && len == 4) {
+            uint8_t d[4];
+            if (!file.read(reinterpret_cast<char*>(d), 4)) {
+                return false;
+            }
+            primaries = d[0];
+            transfer = d[1];
+            haveCicp = true;
+            file.seekg(4, std::ios::cur);  // CRC
+            continue;
+        }
+        file.seekg(std::streamoff(len) + 4, std::ios::cur);
+        if (!file) {
+            return false;
+        }
+    }
+    const bool isPq = transfer == 16;
+    const bool isHlg = transfer == 18;
+    if (!haveCicp || !(isPq || isHlg)) {
+        return false;
+    }
+    file.close();
+
+    auto factory = CreateWic();
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(factory->CreateDecoderFromFilename(
+            path.c_str(), nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnDemand, &decoder))) {
+        return false;
+    }
+    ComPtr<IWICBitmapFrameDecode> wicFrame;
+    if (FAILED(decoder->GetFrame(0, &wicFrame))) {
+        return false;
+    }
+    UINT W = 0, H = 0;
+    WICPixelFormatGUID fmt{};
+    if (FAILED(wicFrame->GetSize(&W, &H)) ||
+        FAILED(wicFrame->GetPixelFormat(&fmt)) || W == 0 || H == 0) {
+        return false;
+    }
+    // Copy the native 16-bit samples untouched (a WIC format conversion could
+    // apply its own gamma assumptions to the code values).
+    uint32_t channels = 0;
+    if (fmt == GUID_WICPixelFormat48bppRGB) {
+        channels = 3;
+    } else if (fmt == GUID_WICPixelFormat64bppRGBA) {
+        channels = 4;
+    } else {
+        return false;  // 8-bit PQ PNGs aren't worth supporting
+    }
+    std::vector<uint16_t> px(size_t(W) * H * channels);
+    if (FAILED(wicFrame->CopyPixels(
+            nullptr, W * channels * 2, UINT(px.size() * 2),
+            reinterpret_cast<BYTE*>(px.data())))) {
+        return false;
+    }
+
+    // PQ: [0,1] of 10000 nits -> scRGB (/80). HLG: assume a 1000-nit peak.
+    const float hlgScale = 1000.0f / 80.0f;
+    out.width = W;
+    out.height = H;
+    out.isHdr = true;
+    out.bytesPerPixel = 8;
+    out.pixels.resize(size_t(W) * H * 8);
+    HALF* dst = reinterpret_cast<HALF*>(out.pixels.data());
+    for (size_t i = 0; i < size_t(W) * H; ++i) {
+        float c[3];
+        for (int k = 0; k < 3; ++k) {
+            const float e = px[i * channels + k] / 65535.0f;
+            c[k] = isPq ? color::PqEotf(e) * 125.0f
+                        : color::HlgInvOetf(e) * hlgScale;
+        }
+        if (primaries == 9) {
+            color::Rec2020ToRec709(c[0], c[1], c[2]);
+        } else if (primaries == 12) {
+            color::DisplayP3ToRec709(c[0], c[1], c[2]);
+        }
+        dst[i * 4 + 0] = XMConvertFloatToHalf(c[0]);
+        dst[i * 4 + 1] = XMConvertFloatToHalf(c[1]);
+        dst[i * 4 + 2] = XMConvertFloatToHalf(c[2]);
+        dst[i * 4 + 3] = XMConvertFloatToHalf(1.0f);
+    }
+    return true;
+}
+
+}  // namespace
+
 Frame LoadFrameFromFile(const std::wstring& path) {
+    {
+        Frame hdrPng;
+        if (TryLoadHdrPng(path, hdrPng)) {
+            return hdrPng;
+        }
+    }
 #if defined(SUNDIAL_HAS_ULTRAHDR)
     // Ultra HDR JPEGs decode through libultrahdr (applying the gain map) so the
     // editor re-opens them as HDR. WIC would only see the SDR base image.

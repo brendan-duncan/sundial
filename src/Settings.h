@@ -25,6 +25,17 @@ enum class OutputGamma : int {
     Linear = 2,     // no gamma applied (skip linear->sRGB)
 };
 
+// Color primaries of the tonemapped SDR file output. sRGB is universal.
+// Display P3 keeps the wide-gamut colors an HDR desktop can show (P3 games,
+// HDR video/photos) instead of squeezing them into sRGB; the PNG is tagged
+// with an embedded ICC profile (plus cICP) so color-managed viewers show it
+// correctly. Only file output honors this - the clipboard, toast thumbnail,
+// frozen-screen overlay, live preview and video are always sRGB.
+enum class OutputGamut : int {
+    Srgb = 0,
+    DisplayP3 = 1,
+};
+
 struct TonemapParams {
     // Where scRGB "1.0" should sit on the SDR output. The base default is 80
     // (scRGB convention: 1.0 = 80 nits, no rescaling - safe for SDR
@@ -78,6 +89,9 @@ struct TonemapParams {
     // images authored to 1000 nits we cap here so the curve has a reasonable
     // source range to compress from.
     float sourcePeakNits = 1000.0f;
+    // Primaries of the SDR file output (see OutputGamut). Kept last so older
+    // presets/settings that lack it load as sRGB.
+    OutputGamut outputGamut = OutputGamut::Srgb;
 };
 
 // How HDR is represented inside an exported AVIF. Pq encodes the HDR signal
@@ -100,13 +114,17 @@ struct SnapshotFormats {
     bool jxr = true;            // JPEG XR / .jxr (HDR only)
     bool ultraHdrJpeg = false;  // Ultra HDR JPEG / .jpg (SDR+HDR, HDR only)
     bool avif = false;          // HDR AVIF / .avif (HDR only)
+    // Lossless 16-bit Rec.2020 PQ PNG tagged with a cICP chunk, written as
+    // <stem>_hdr.png next to the SDR PNG (HDR only).
+    bool pngHdr = false;
     AvifHdrMode avifMode = AvifHdrMode::Pq;  // how avif encodes HDR
 };
 
 // True if at least one enabled format would produce a file for a frame with the
 // given HDR-ness. PNG always qualifies; the HDR formats only when isHdr.
 inline bool AnySnapshotFormatApplies(const SnapshotFormats& f, bool isHdr) {
-    return f.png || (isHdr && (f.jxr || f.ultraHdrJpeg || f.avif));
+    return f.png ||
+           (isHdr && (f.jxr || f.ultraHdrJpeg || f.avif || f.pngHdr));
 }
 
 // Global-hotkey modifier bits. These match the Win32 MOD_* values from

@@ -31,8 +31,9 @@ public:
 
     // Set the tonemap source from an existing GPU texture, with no CPU upload.
     // Used by the video recorder, which already has each captured frame on the
-    // GPU. Unlike SetSource() this skips mip generation, so the local-tonemap
-    // pass is unavailable on this path (localStrength is effectively ignored).
+    // GPU. Unlike SetSource() this skips building the log-luminance pyramid,
+    // so the local-tonemap pass is unavailable on this path (localStrength is
+    // ignored).
     // `isHdr` selects the same linear-vs-sRGB source handling SetSource() does.
     bool SetSourceTexture(ID3D11Texture2D* tex, bool isHdr);
 
@@ -72,9 +73,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
     Microsoft::WRL::ComPtr<ID3D11BlendState> blendOpaque_;
 
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> psLogLum_;
+
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> sourceSrv_;
     bool sourceIsHdr_ = false;
-    uint32_t sourceMipCount_ = 1;
+
+    // Local tonemap base layer: log2 luminance of the source with a full mip
+    // chain; localLevel_ is the coarse level the bilateral upsample reads.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> logLumTex_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> logLumSrv_;
+    int localLevel_ = 0;
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> outputSdrTex_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> outputSdrRtv_;

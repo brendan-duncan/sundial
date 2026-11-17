@@ -1,6 +1,7 @@
 #include "VideoRecorder.h"
 
 #include "ShaderTonemap.h"
+#include "Tonemap.h"
 
 #include <d3d11.h>
 #include <dxgi1_6.h>
@@ -90,7 +91,7 @@ void SeedTonemapForDisplay(TonemapParams& tm, bool isHdr, float displayPeakNits,
                            float sdrWhiteNits) {
     if (isHdr) {
         const float os = sdrWhiteNits > 0.0f ? sdrWhiteNits : 200.0f;
-        tm.sdrWhiteNits = std::clamp(os, 40.0f, 400.0f);
+        tm.sdrWhiteNits = std::clamp(os, kMinSdrWhiteNits, kMaxSdrWhiteNits);
         const float peak = displayPeakNits > 0.0f ? displayPeakNits : 1000.0f;
         tm.sourcePeakNits = std::clamp(peak, 400.0f, 4000.0f);
         tm.highlightRolloff = 0.0f;

@@ -20,9 +20,19 @@ std::vector<uint8_t> EncodePngToMemory(const uint8_t* bgra, uint32_t width,
 void SaveJxrHdr(const Frame& frame, const std::wstring& path);
 
 // Tonemap an HDR frame to SDR with the supplied parameters and write as PNG.
+// Tagged for color management according to params.outputGamut/outputGamma
+// (sRGB chunk, or an embedded Display P3 ICC profile plus cICP).
 void SavePngTonemapped(const Frame& frame,
                        const TonemapParams& params,
                        const std::wstring& path);
+
+// Write an HDR frame as a lossless 16-bit Rec.2020 PQ PNG tagged with cICP
+// (PNG 3rd edition) and cLLi. Same HDR rendition as the PQ AVIF: exposure and
+// per-channel gain applied, tone curve not applied. Chrome, Edge and Windows
+// Photos display it as HDR; LoadFrameFromFile reads it back as HDR.
+void SavePngHdrPq(const Frame& frame,
+                  const TonemapParams& params,
+                  const std::wstring& path);
 
 // Write an HDR frame as an Ultra HDR JPEG (.jpg): a normal SDR JPEG (the
 // tonemapped result, identical to what SavePngTonemapped produces) plus an

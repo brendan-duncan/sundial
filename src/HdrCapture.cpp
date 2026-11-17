@@ -1,6 +1,7 @@
 #include "HdrCapture.h"
 
 #include "Settings.h"
+#include "Tonemap.h"
 
 #include <Windows.h>
 #include <d3d11.h>
@@ -340,7 +341,7 @@ void SeedTonemapForFrame(TonemapParams& tm, const Frame& frame) {
     if (frame.isHdr) {
         const float os =
             frame.sdrWhiteLevelNits > 0.0f ? frame.sdrWhiteLevelNits : 200.0f;
-        tm.sdrWhiteNits = std::clamp(os, 40.0f, 400.0f);
+        tm.sdrWhiteNits = std::clamp(os, kMinSdrWhiteNits, kMaxSdrWhiteNits);
         const float peak =
             frame.maxLuminanceNits > 0.0f ? frame.maxLuminanceNits : 1000.0f;
         tm.sourcePeakNits = std::clamp(peak, 400.0f, 4000.0f);

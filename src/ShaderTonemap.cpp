@@ -1,7 +1,11 @@
 #include "ShaderTonemap.h"
 
+#include "Tonemap.h"
+
 #include <d3dcompiler.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 using Microsoft::WRL::ComPtr;
@@ -32,11 +36,48 @@ cbuffer TonemapCB : register(b0) {
     float  uKneePoint;      // 0..1, PreserveSdr/BT2390 knee start
     float  uHighlightDesat; // 0..1, Hunt-effect highlight desaturation
     float  uSourcePeakNits; // BT2390 source peak luminance in nits
-    float  _pad0[3];        // pad to a 16-byte boundary for D3D11
+    int    uHasLocal;       // 1: gLogLum is bound (local tonemap available)
+    int    uDither;         // 1: dither before the 8-bit render target
+    float  _pad0;           // pad to a 16-byte boundary for D3D11
 };
 
-Texture2D   gSource : register(t0);
-SamplerState gSamp  : register(s0);
+Texture2D        gSource : register(t0);
+Texture2D<float> gLogLum : register(t1);  // log2 luminance + mip chain
+SamplerState     gSamp   : register(s0);
+
+static const float3 kLuma709 = float3(0.2126, 0.7152, 0.0722);
+
+// --- Mirrors of ColorMath.h (keep in sync) ---------------------------------
+
+// Desaturate toward luminance (luminance + hue held) just enough to remove
+// negative components, instead of clamping channels independently.
+float3 MapNegativesIntoGamut(float3 c) {
+    float Y = dot(c, kLuma709);
+    if (Y <= 0.0) return float3(0, 0, 0);
+    float minc = min(c.r, min(c.g, c.b));
+    if (minc >= 0.0) return c;
+    float t = Y / (Y - minc);
+    return Y + (c - Y) * t;
+}
+
+// Fit into the [0,1] cube the same way at both ends: no per-channel clip.
+float3 FitIntoGamut(float3 c) {
+    c = MapNegativesIntoGamut(c);
+    float Y = dot(c, kLuma709);
+    if (Y >= 1.0) return float3(1, 1, 1);
+    float maxc = max(c.r, max(c.g, c.b));
+    if (maxc <= 1.0) return c;
+    float t = (1.0 - Y) / (maxc - Y);
+    return Y + (c - Y) * t;
+}
+
+// Interleaved gradient noise in [0,1); k decorrelates channels.
+float DitherNoise(uint2 p, uint k) {
+    float2 f = float2(p + uint2(17u, 59u) * k);
+    return frac(52.9829189 * frac(0.06711056 * f.x + 0.00583715 * f.y));
+}
+static const float kDitherAmplitudeLsb = 0.4;
+// ---------------------------------------------------------------------------
 
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 
@@ -218,25 +259,64 @@ float3 ApplyCurve(float3 c) {
     if (uCurve == 3) return ApplyHable(c);
     if (uCurve == 4) return ApplyAgX(c);
     if (uCurve == 5) return ApplyNeutral(c);
-    if (uCurve == 6) return saturate(ApplyHighlightDesat(ApplyPreserveSdr(c)));
-    if (uCurve == 7) return saturate(ApplyHighlightDesat(ApplyBt2390(c)));
+    // Luminance-ratio curves: no per-channel clamp here - FitIntoGamut at
+    // the end resolves saturated highlights at constant luminance.
+    if (uCurve == 6) return ApplyHighlightDesat(ApplyPreserveSdr(c));
+    if (uCurve == 7) return ApplyHighlightDesat(ApplyBt2390(c));
     return saturate(c);
 }
 
+// scRGB values keep their sign: negative components encode colors outside
+// sRGB, and are gamut-mapped (not clamped) after the scene adjustments.
 float3 ReadLinear(float2 uv) {
-    float3 c = max(0, gSource.SampleLevel(gSamp, uv, 0).rgb);
+    float3 c = gSource.SampleLevel(gSamp, uv, 0).rgb;
     if (uIsHdr == 0) c = SrgbToLinear(c);
     return c;
 }
 
-float3 ReadLinearLod(float2 uv, float lod) {
-    float3 c = max(0, gSource.SampleLevel(gSamp, uv, lod).rgb);
-    if (uIsHdr == 0) c = SrgbToLinear(c);
-    return c;
+float Roll(float x) {
+    if (uHighlightRolloff <= 0 || x <= 0.7) return x;
+    return x - (x - 0.7) * uHighlightRolloff;
+}
+
+// Joint-bilateral upsample of the coarse log-luminance level: 4x4 taps around
+// the pixel's position, each weighted by spatial distance and by how close
+// its log-luminance is to the pixel's own (lp). Mirrors TonemapToBgra8.
+static const float kLocalSigmaSpatial = 1.0;
+static const float kLocalSigmaRange = 1.0;
+float LocalBaseLog(float2 uv, float lp) {
+    int level = int(uLocalLod);
+    uint cw, ch, levels;
+    gLogLum.GetDimensions(level, cw, ch, levels);
+    float2 f = uv * float2(cw, ch) - 0.5;
+    int2 i0 = int2(floor(f));
+    float invS = 1.0 / (2.0 * kLocalSigmaSpatial * kLocalSigmaSpatial);
+    float invR = 1.0 / (2.0 * kLocalSigmaRange * kLocalSigmaRange);
+    float sw = 0, sv = 0;
+    [unroll] for (int dj = -1; dj <= 2; ++dj) {
+        [unroll] for (int di = -1; di <= 2; ++di) {
+            int2 t = i0 + int2(di, dj);
+            int2 tc = clamp(t, int2(0, 0), int2(cw - 1, ch - 1));
+            float2 d = float2(t) - f;
+            float lt = gLogLum.Load(int3(tc, level));
+            float dl = lt - lp;
+            float w = exp(-dot(d, d) * invS - dl * dl * invR);
+            sw += w;
+            sv += w * lt;
+        }
+    }
+    return sw > 1e-20 ? sv / sw : lp;
+}
+
+// Full-screen pass that fills gLogLum's top level (mips are then generated).
+float PSLogLum(VSOut i) : SV_Target {
+    float3 c = ReadLinear(i.uv);
+    return log2(max(dot(c, kLuma709), 1e-6));
 }
 
 float4 PSMain(VSOut i) : SV_Target {
     float3 c = ReadLinear(i.uv);
+    const float3 rawC = c;
 
     if (uPassthrough != 0) {
         // Linear-output mode: write raw scRGB values, unclipped (so an HDR
@@ -245,7 +325,7 @@ float4 PSMain(VSOut i) : SV_Target {
         if (uLinearOutput != 0) {
             return float4(c, 1.0);
         }
-        return float4(ApplyOutputGamma(saturate(c)), 1.0);
+        return float4(ApplyOutputGamma(FitIntoGamut(c)), 1.0);
     }
 
     // Unsharp-mask sharpen using 4 neighbors of the source.
@@ -257,7 +337,7 @@ float4 PSMain(VSOut i) : SV_Target {
                  + ReadLinear(i.uv + float2(-px.x, 0))
                  + ReadLinear(i.uv + float2(0,  px.y))
                  + ReadLinear(i.uv + float2(0, -px.y));
-        c = max(0.0, c + (c - n * 0.25) * (uSharpen * 2.0));
+        c = c + (c - n * 0.25) * (uSharpen * 2.0);
     }
 
     // White balance: rough temperature/tint shift.
@@ -265,38 +345,22 @@ float4 PSMain(VSOut i) : SV_Target {
     c.g *= 1.0                        - uTint * 0.30;
     c.b *= 1.0 - uTemperature * 0.30 + uTint * 0.15;
 
-    // Per-channel gain.
-    c *= float3(uRGain, uGGain, uBGain);
+    // Per-channel gain, exposure, pre-curve highlight knee (0.7).
+    c *= float3(uRGain, uGGain, uBGain) * uExposure;
+    c = float3(Roll(c.r), Roll(c.g), Roll(c.b));
 
-    // Exposure.
-    c *= uExposure;
+    // Hue-preserving map of out-of-gamut (negative) scRGB colors.
+    c = MapNegativesIntoGamut(c);
 
-    // Highlight rolloff (pre-curve knee at 0.7).
-    if (uHighlightRolloff > 0) {
-        float knee = 0.7;
-        float3 over = max(c - knee, 0.0);
-        c = c - over * uHighlightRolloff;
-    }
-
-    // Local tonemap: compute the curve's compression ratio on a blurred
-    // sample of the source and apply that ratio to the (sharpened) full-res
-    // pixel. Result: dark UI in front of bright HDR content keeps its
-    // dynamic range, because the curve only compresses brightness on a
-    // per-region basis instead of globally.
-    if (uLocalStrength > 0) {
-        float3 cb = ReadLinearLod(i.uv, uLocalLod);
-        cb.r *= 1.0 + uTemperature * 0.30 + uTint * 0.15;
-        cb.g *= 1.0                        - uTint * 0.30;
-        cb.b *= 1.0 - uTemperature * 0.30 + uTint * 0.15;
-        cb *= float3(uRGain, uGGain, uBGain);
-        cb *= uExposure;
-        if (uHighlightRolloff > 0) {
-            float3 over = max(cb - 0.7, 0.0);
-            cb = cb - over * uHighlightRolloff;
-        }
-        float3 cb_tm = ApplyCurve(cb);
-        float3 ratio = cb_tm / max(cb, 1e-5);
-        float3 c_local = saturate(c * ratio);
+    // Local tonemap: evaluate the curve at the edge-aware local base
+    // luminance and apply its compression ratio to this pixel, so detail
+    // survives inside both bright HDR regions and dark UI next to them.
+    if (uLocalStrength > 0 && uHasLocal != 0) {
+        float lp = log2(max(dot(rawC, kLuma709), 1e-6));
+        float base = Roll(exp2(LocalBaseLog(i.uv, lp)) * uExposure);
+        float ratio = max(dot(ApplyCurve(float3(base, base, base)), kLuma709),
+                          0.0) / max(base, 1e-6);
+        float3 c_local = ApplyPreserveSdr(c * ratio);
         float3 c_global = ApplyCurve(c);
         c = lerp(c_global, c_local, uLocalStrength);
     } else {
@@ -308,21 +372,44 @@ float4 PSMain(VSOut i) : SV_Target {
     }
 
     if (uSaturation != 1.0) {
-        float gray = dot(c, float3(0.2126, 0.7152, 0.0722));
-        c = saturate(lerp(float3(gray, gray, gray), c, uSaturation));
+        float gray = dot(c, kLuma709);
+        c = lerp(float3(gray, gray, gray), c, uSaturation);
     }
 
-    // Gamut compress: pull oob colors toward gray.
+    // Gamut compress: optional extra pull of oob colors toward gray.
     if (uGamutCompress > 0) {
         float maxc = max(c.r, max(c.g, c.b));
         float minc = min(c.r, min(c.g, c.b));
         if (maxc > 1.0 || minc < 0.0) {
-            float gray = dot(c, float3(0.2126, 0.7152, 0.0722));
+            float gray = dot(c, kLuma709);
             c = lerp(c, float3(gray, gray, gray), uGamutCompress);
         }
     }
 
-    return float4(ApplyOutputGamma(c), 1.0);
+    c = ApplyOutputGamma(FitIntoGamut(c));
+
+    // Break up 8-bit banding in smooth gradients; amplitude < 0.5 LSB keeps
+    // flat UI/text pixel-exact. Matches the CPU path.
+    // Flat source regions (identical neighbors) are left undithered, like the
+    // CPU path, so solid UI stays clean.
+    uint srcW, srcH;
+    gSource.GetDimensions(srcW, srcH);
+    int2 st = int2(i.uv * float2(srcW, srcH));
+    int2 smax = int2(srcW - 1, srcH - 1);
+    float3 s0 = gSource.Load(int3(clamp(st, 0, smax), 0)).rgb;
+    bool flat =
+        all(gSource.Load(int3(clamp(st + int2(1, 0), 0, smax), 0)).rgb == s0) &&
+        all(gSource.Load(int3(clamp(st - int2(1, 0), 0, smax), 0)).rgb == s0) &&
+        all(gSource.Load(int3(clamp(st + int2(0, 1), 0, smax), 0)).rgb == s0) &&
+        all(gSource.Load(int3(clamp(st - int2(0, 1), 0, smax), 0)).rgb == s0);
+    if (uDither != 0 && !flat) {
+        uint2 p = uint2(i.pos.xy);
+        float3 n = float3(DitherNoise(p, 0), DitherNoise(p, 1),
+                          DitherNoise(p, 2)) - 0.5;
+        c += n * (2.0 * kDitherAmplitudeLsb / 255.0);
+    }
+
+    return float4(c, 1.0);
 }
 )HLSL";
 
@@ -348,7 +435,9 @@ struct CBLayout {
     float kneePoint;
     float highlightDesat;
     float sourcePeakNits;
-    float _pad0[3];
+    int hasLocal;
+    int dither;
+    float _pad0;
 };
 static_assert(sizeof(CBLayout) % 16 == 0,
               "D3D11 constant buffers must be a multiple of 16 bytes");
@@ -377,7 +466,13 @@ bool ShaderTonemap::Initialize(ID3D11Device* device,
 
     auto vsBlob = Compile("VSMain", "vs_5_0");
     auto psBlob = Compile("PSMain", "ps_5_0");
-    if (!vsBlob || !psBlob) {
+    auto lumBlob = Compile("PSLogLum", "ps_5_0");
+    if (!vsBlob || !psBlob || !lumBlob) {
+        return false;
+    }
+    if (FAILED(device_->CreatePixelShader(lumBlob->GetBufferPointer(),
+                                          lumBlob->GetBufferSize(), nullptr,
+                                          &psLogLum_))) {
         return false;
     }
 
@@ -429,48 +524,101 @@ bool ShaderTonemap::Initialize(ID3D11Device* device,
 
 bool ShaderTonemap::SetSource(const Frame& frame) {
     sourceSrv_.Reset();
+    logLumSrv_.Reset();
+    logLumTex_.Reset();
     sourceIsHdr_ = frame.isHdr;
 
-    // Allocate a full mip chain so the local-tonemap pass can sample a
-    // coarse LOD as its "local-average blur". GenerateMips requires the
-    // texture to be a render target.
     D3D11_TEXTURE2D_DESC td{};
     td.Width = frame.width;
     td.Height = frame.height;
-    td.MipLevels = 0;
+    td.MipLevels = 1;
     td.ArraySize = 1;
     td.Format = frame.isHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT
                             : DXGI_FORMAT_B8G8R8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
+    D3D11_SUBRESOURCE_DATA init{};
+    init.pSysMem = frame.pixels.data();
+    init.SysMemPitch = frame.width * frame.bytesPerPixel;
     ComPtr<ID3D11Texture2D> tex;
-    if (FAILED(device_->CreateTexture2D(&td, nullptr, &tex))) {
+    if (FAILED(device_->CreateTexture2D(&td, &init, &tex))) {
         return false;
     }
-    context_->UpdateSubresource(tex.Get(), 0, nullptr, frame.pixels.data(),
-                                frame.width * frame.bytesPerPixel, 0);
     if (FAILED(device_->CreateShaderResourceView(tex.Get(), nullptr,
                                                  &sourceSrv_))) {
         return false;
     }
-    context_->GenerateMips(sourceSrv_.Get());
 
-    // Track actual mip count for the local-tonemap LOD selection.
-    D3D11_TEXTURE2D_DESC actual{};
-    tex->GetDesc(&actual);
-    sourceMipCount_ = actual.MipLevels;
+    // Local tonemap base layer: render log2 luminance into an R16_FLOAT
+    // texture and let the hardware build its mip chain (box-averaged log
+    // luminance). Failure here only disables the local tonemap.
+    D3D11_TEXTURE2D_DESC ld = td;
+    ld.MipLevels = 0;  // full chain
+    ld.Format = DXGI_FORMAT_R16_FLOAT;
+    ld.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    ld.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    ComPtr<ID3D11Texture2D> lum;
+    ComPtr<ID3D11RenderTargetView> lumRtv;
+    ComPtr<ID3D11ShaderResourceView> lumSrv;
+    if (SUCCEEDED(device_->CreateTexture2D(&ld, nullptr, &lum)) &&
+        SUCCEEDED(device_->CreateRenderTargetView(lum.Get(), nullptr,
+                                                  &lumRtv)) &&
+        SUCCEEDED(device_->CreateShaderResourceView(lum.Get(), nullptr,
+                                                    &lumSrv))) {
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (SUCCEEDED(context_->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
+                                    &m))) {
+            CBLayout cb{};
+            cb.isHdr = sourceIsHdr_ ? 1 : 0;
+            std::memcpy(m.pData, &cb, sizeof(cb));
+            context_->Unmap(cb_.Get(), 0);
+        }
+        D3D11_VIEWPORT vp{};
+        vp.Width = float(frame.width);
+        vp.Height = float(frame.height);
+        vp.MaxDepth = 1.0f;
+        context_->RSSetViewports(1, &vp);
+        context_->RSSetState(rasterizer_.Get());
+        ID3D11RenderTargetView* rtv = lumRtv.Get();
+        context_->OMSetRenderTargets(1, &rtv, nullptr);
+        const float blendFactor[4] = {0, 0, 0, 0};
+        context_->OMSetBlendState(blendOpaque_.Get(), blendFactor, 0xFFFFFFFF);
+        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context_->IASetInputLayout(nullptr);
+        context_->VSSetShader(vs_.Get(), nullptr, 0);
+        context_->PSSetShader(psLogLum_.Get(), nullptr, 0);
+        ID3D11Buffer* cbs[] = {cb_.Get()};
+        context_->PSSetConstantBuffers(0, 1, cbs);
+        ID3D11ShaderResourceView* srvs[] = {sourceSrv_.Get(), nullptr};
+        context_->PSSetShaderResources(0, 2, srvs);
+        ID3D11SamplerState* samps[] = {sampler_.Get()};
+        context_->PSSetSamplers(0, 1, samps);
+        context_->Draw(3, 0);
+        ID3D11RenderTargetView* nullRtv = nullptr;
+        context_->OMSetRenderTargets(1, &nullRtv, nullptr);
+        ID3D11ShaderResourceView* nullSrv[] = {nullptr};
+        context_->PSSetShaderResources(0, 1, nullSrv);
+        context_->GenerateMips(lumSrv.Get());
+
+        D3D11_TEXTURE2D_DESC actual{};
+        lum->GetDesc(&actual);
+        localLevel_ = std::min(LocalTonemapLevel(frame.width, frame.height),
+                               int(actual.MipLevels) - 1);
+        logLumTex_ = lum;
+        logLumSrv_ = lumSrv;
+    }
     return true;
 }
 
 bool ShaderTonemap::SetSourceTexture(ID3D11Texture2D* tex, bool isHdr) {
     sourceSrv_.Reset();
+    logLumSrv_.Reset();
+    logLumTex_.Reset();
     sourceIsHdr_ = isHdr;
-    // No mip chain on this path: the recorder feeds full-res GPU textures and
-    // local tonemap (which samples a coarse LOD) isn't used during recording.
-    sourceMipCount_ = 1;
+    // No log-luminance pyramid on this path: the recorder feeds full-res GPU
+    // textures and the local tonemap isn't used during recording.
     if (!tex) {
         return false;
     }
@@ -560,10 +708,12 @@ void ShaderTonemap::RenderSdr(const TonemapParams& params) {
         cb.bGain = params.bGain;
         cb.linearOutput = 0;  // SDR RT is always 8-bit sRGB-encoded
         cb.localStrength = std::clamp(params.localStrength, 0.0f, 1.0f);
-        cb.localLod = float(sourceMipCount_ > 1 ? sourceMipCount_ - 1 : 0);
+        cb.localLod = float(localLevel_);
         cb.kneePoint = params.kneePoint;
         cb.highlightDesat = params.highlightDesat;
         cb.sourcePeakNits = params.sourcePeakNits;
+        cb.hasLocal = logLumSrv_ ? 1 : 0;
+        cb.dither = 1;  // SDR target is 8-bit
         std::memcpy(m.pData, &cb, sizeof(cb));
         context_->Unmap(cb_.Get(), 0);
     }
@@ -600,6 +750,8 @@ void ShaderTonemap::RenderHdrPassthrough() {
         cb.kneePoint = 0.75f;
         cb.highlightDesat = 0.0f;
         cb.sourcePeakNits = 1000.0f;
+        cb.hasLocal = 0;
+        cb.dither = 0;
         std::memcpy(m.pData, &cb, sizeof(cb));
         context_->Unmap(cb_.Get(), 0);
     }
@@ -626,15 +778,15 @@ void ShaderTonemap::SetPipelineAndDraw(ID3D11RenderTargetView* rtv) {
     context_->PSSetShader(ps_.Get(), nullptr, 0);
     ID3D11Buffer* cbs[] = {cb_.Get()};
     context_->PSSetConstantBuffers(0, 1, cbs);
-    ID3D11ShaderResourceView* srvs[] = {sourceSrv_.Get()};
-    context_->PSSetShaderResources(0, 1, srvs);
+    ID3D11ShaderResourceView* srvs[] = {sourceSrv_.Get(), logLumSrv_.Get()};
+    context_->PSSetShaderResources(0, 2, srvs);
     ID3D11SamplerState* samps[] = {sampler_.Get()};
     context_->PSSetSamplers(0, 1, samps);
 
     context_->Draw(3, 0);
 
-    ID3D11ShaderResourceView* nullSrv[] = {nullptr};
-    context_->PSSetShaderResources(0, 1, nullSrv);
+    ID3D11ShaderResourceView* nullSrv[] = {nullptr, nullptr};
+    context_->PSSetShaderResources(0, 2, nullSrv);
 }
 
 }  // namespace sundial

@@ -210,6 +210,8 @@ bool DrawSettingsControls(AppSettings& s, HWND owner, const bool* captureIsHdr,
 
     changed |= ImGui::Checkbox("PNG (SDR)", &s.snapshot.png);
     changed |= ImGui::Checkbox("JPEG XR / .jxr (HDR)", &s.snapshot.jxr);
+    changed |= ImGui::Checkbox("HDR PNG / _hdr.png (16-bit PQ)",
+                               &s.snapshot.pngHdr);
 #ifdef SUNDIAL_HAS_ULTRAHDR
     changed |= ImGui::Checkbox("Ultra HDR JPEG / .jpg (SDR+HDR)",
                                &s.snapshot.ultraHdrJpeg);

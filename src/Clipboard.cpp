@@ -143,8 +143,11 @@ bool CopyBgra8ToClipboard(std::vector<uint8_t> bgra, uint32_t width,
 
 bool CopyFrameToClipboard(const Frame& frame, const TonemapParams& tonemap,
                           HWND owner) {
+    // The clipboard carries no color profile: always produce sRGB.
+    TonemapParams srgb = tonemap;
+    srgb.outputGamut = OutputGamut::Srgb;
     std::vector<uint8_t> bgra =
-        frame.isHdr ? TonemapToBgra8(frame, tonemap) : frame.pixels;
+        frame.isHdr ? TonemapToBgra8(frame, srgb) : frame.pixels;
     return CopyBgra8ToClipboard(std::move(bgra), frame.width, frame.height,
                                 owner);
 }

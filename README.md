@@ -85,8 +85,13 @@ open the editor. Instead it
 * **Image Snapshot Formats** — choose any combination of formats a snapshot
   writes (these are for stills; video recording has its own format settings):
   * **PNG (SDR)** — the tonemapped SDR result. **On by default.**
-  * **JPEG XR / `.jxr` (HDR)** — the original FP16 scRGB capture, so you can
-    re-tone later without recapturing. **On by default.** HDR captures only.
+  * **JPEG XR / `.jxr` (HDR)** — the original FP16 scRGB capture, stored
+    losslessly, so you can re-tone later without recapturing. **On by
+    default.** HDR captures only.
+  * **HDR PNG / `_hdr.png` (16-bit PQ)** — a lossless 16-bit Rec.2020 PQ PNG
+    tagged with `cICP` (PNG 3rd edition), so Chrome, Edge and Windows Photos
+    show it as HDR. Sharper than AVIF/JPEG for UI and text. HDR captures only.
+    **Off by default.**
   * **Ultra HDR JPEG / `.jpg` (SDR+HDR)** — a single self-contained JPEG (SDR
     base + embedded gain map). HDR captures only; available when built with
     libultrahdr. **Off by default.**
@@ -130,8 +135,13 @@ when **Edit on Capture** is on.
   **Black point lift** — fine-tune the curve.
 * **Color** — saturation, temperature/tint, per-channel gain, gamut
   compression.
-* **Detail** — unsharp-mask sharpen and a local-tonemap blend (preserves
-  dark UI in front of bright HDR content).
+* **Detail** — unsharp-mask sharpen and an edge-aware local tonemap
+  (compresses bright HDR regions on their own, so dark UI next to them keeps
+  its contrast, without halos).
+* **Output** — gamma, and **Gamut**: **sRGB** (default) or **Display P3**,
+  which keeps wide-gamut HDR colors in the saved PNG / Ultra HDR / gain-map
+  AVIF and embeds a matching color profile. The preview, clipboard, and video
+  are always sRGB.
 * **Crop** — drag on the preview, or use the X/Y/W/H sliders.
 * **Resize** — width/height with optional aspect lock.
 * **Presets** — save/load the full slider set under any name; persisted
@@ -167,9 +177,11 @@ Captures land in `Pictures\Sundial\` (which OneDrive may redirect). An HDR
 capture writes one file per enabled **Image Snapshot Format**, all sharing the
 same stem:
 
-* `sundial_YYYYMMDD_HHMMSS.png` — tonemapped SDR result.
-* `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB, so you can re-tone via
-  **Edit Image…** without recapturing.
+* `sundial_YYYYMMDD_HHMMSS.png` — tonemapped SDR result (tagged sRGB, or
+  Display P3 with an embedded ICC profile).
+* `sundial_YYYYMMDD_HHMMSS.jxr` — original FP16 scRGB (lossless), so you can
+  re-tone via **Edit Image…** without recapturing.
+* `sundial_YYYYMMDD_HHMMSS_hdr.png` — lossless 16-bit Rec.2020 PQ HDR PNG.
 * `sundial_YYYYMMDD_HHMMSS.jpg` — Ultra HDR JPEG (SDR base + gain map).
 * `sundial_YYYYMMDD_HHMMSS.avif` — HDR AVIF (10-bit PQ, or SDR base + gain map).
 
@@ -276,9 +288,13 @@ Exposed in the editor and persisted in `settings.ini`:
 **Color**
 - `saturation` — luminance-grayscale blend, 1.0 = unchanged.
 - `temperature` / `tint` — two-axis colour shift (warm/cool, green/magenta).
-- `gamutCompress` — pulls colors that go out of [0,1] toward gray, instead
-  of clipping. Cheap approximation; the real ACES gamut compressor is more
-  involved.
+- `gamutCompress` — an extra pull of out-of-[0,1] colors toward gray (a
+  softer look). Independently of it, every pixel is gamut-mapped without
+  per-channel clipping: scRGB's negative (wider-than-sRGB) components are
+  removed by desaturating at constant luminance right after the scene
+  adjustments, and anything still outside [0,1] after the curve (e.g. a
+  saturated BT.2390 highlight) is fitted the same way before encoding
+  (`ColorMath.h`: `MapNegativesIntoGamut` / `FitIntoGamut`).
 - `rGain` / `gGain` / `bGain` — per-channel multipliers in scene-linear
   space (alternative to temperature/tint for white-balance tweaks).
 
@@ -286,12 +302,26 @@ Exposed in the editor and persisted in `settings.ini`:
 - `sharpen` — unsharp-mask amount on the source (4-tap cross neighbours).
   Applied in scene-linear space *before* the curve, both on GPU preview and
   on CPU save, so the two paths match.
+- `localStrength` — blend toward an edge-aware local tonemap. A coarse grid
+  of mean log2 luminance (~32–63 cells on the long side) is upsampled per
+  pixel with a joint bilateral filter (4×4 taps, spatial σ 1 cell, range σ
+  1 stop), the curve is evaluated at that local base luminance, and its
+  compression ratio is applied to the pixel. The GPU builds the grid as the
+  mip chain of an R16_FLOAT log-luminance texture.
 
 **Output**
 - `outputGamma` — `Srgb | Gamma22 | Linear`. Linear skips the gamma encode
   entirely (PNG viewers will treat the file as sRGB and it'll look dark and
   contrasty — only useful when the file is consumed by something
   gamma-aware).
+- `outputGamut` — `Srgb | DisplayP3`. The CPU path works in the output
+  primaries from the gamut mapping onward; P3 PNGs carry an ICC v2 profile
+  plus `cICP`, sRGB ones an `sRGB` chunk. Callers that display or copy the
+  result (clipboard, toast, frozen overlay) force sRGB; the GPU preview is
+  always sRGB.
+- 8-bit output is dithered with ±0.4 LSB interleaved-gradient noise before
+  quantization: enough to break up banding in smooth HDR gradients, but below
+  half a code value so flat UI and text stay pixel-exact.
 
 Both `Tonemap.cpp` (CPU) and `ShaderTonemap.cpp` (HLSL string literal,
 compiled at runtime) implement these identically. Changing one without the
@@ -329,17 +359,19 @@ editor only renders the HDR one when a comparison mode actually needs it.
 - Resize is width/height inputs with aspect lock.
 - Save → applies crop + resize to the FP16/BGRA8 source, persists tonemap
   params + settings to `settings.ini`, then writes every enabled **Image
-  Snapshot Format** (PNG / JXR / Ultra HDR JPEG / HDR AVIF). Save As writes one
-  explicit file.
+  Snapshot Format** (PNG / JXR / HDR PNG / Ultra HDR JPEG / HDR AVIF). Save
+  As writes one explicit file.
 - Cancel → nothing is saved.
 
 ## Conventions / things to keep in mind
 
 - `Frame.pixels` is tightly packed (no row padding): FP16 RGBA when HDR,
   BGRA8 otherwise. `bytesPerPixel` distinguishes them.
-- Tonemap and shader must keep their maths identical. Currently:
-  `c = max(0, src.rgb) * (80/sdrWhiteNits) * 2^EV`, apply curve, apply
-  saturation, encode sRGB.
+- Tonemap and shader must keep their maths identical. Currently: signed
+  `src.rgb` → white balance / gain / `(80/sdrWhiteNits) * 2^EV` / rolloff →
+  (CPU: to output primaries) → `MapNegativesIntoGamut` → curve (optionally
+  blended with the local tonemap) → lift / saturation / gamut compress →
+  `FitIntoGamut` → output gamma → dither → 8-bit.
 - The CMake target list at the top of `CMakeLists.txt` is the source of
   truth — adding a new `.cpp` requires editing it.
 - ImGui is built as a separate static target; `target_compile_options(imgui
@@ -352,6 +384,8 @@ editor only renders the HDR one when a comparison mode actually needs it.
 - Multi-monitor: capture and recording both cover the primary monitor only.
 - No HDR metadata (MaxCLL, MaxFALL, ICC) embedded in the JXR — Windows
   Photos still recognises it as HDR via the FP16 pixel format alone.
+- Re-opening a Display P3 SDR PNG in the editor ignores its profile (it's
+  read as sRGB); re-tone from the `.jxr` instead.
 - Area capture path captures the full primary monitor then crops in CPU
   (fine for stills).
 - Video recording:

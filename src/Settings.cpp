@@ -112,6 +112,7 @@ void WriteTonemapParams(std::ostream& f, const TonemapParams& p) {
     f << "knee_point = " << p.kneePoint << "\n";
     f << "highlight_desat = " << p.highlightDesat << "\n";
     f << "source_peak_nits = " << p.sourcePeakNits << "\n";
+    f << "output_gamut = " << static_cast<int>(p.outputGamut) << "\n";
 }
 
 // Apply a single key=value pair to a TonemapParams. Returns false if the key
@@ -162,6 +163,10 @@ bool ApplyTonemapKey(TonemapParams& p, const std::string& key,
         else if (key == "output_gamma") {
             int g = std::clamp(std::stoi(value), 0, 2);
             p.outputGamma = static_cast<OutputGamma>(g);
+        }
+        else if (key == "output_gamut") {
+            int g = std::clamp(std::stoi(value), 0, 1);
+            p.outputGamut = static_cast<OutputGamut>(g);
         }
         else if (key == "local_strength") {
             p.localStrength = std::clamp(std::stof(value), 0.0f, 1.0f);
@@ -313,6 +318,8 @@ AppSettings LoadSettings() {
             s.snapshot.ultraHdrJpeg = asBool(value);
         } else if (key == "snapshot_avif") {
             s.snapshot.avif = asBool(value);
+        } else if (key == "snapshot_png_hdr") {
+            s.snapshot.pngHdr = asBool(value);
         } else if (key == "snapshot_avif_mode") {
             s.snapshot.avifMode = (value == "gainmap")
                                       ? AvifHdrMode::GainMap
@@ -357,6 +364,8 @@ void SaveSettings(const AppSettings& s) {
     f << "snapshot_avif = " << (s.snapshot.avif ? "true" : "false") << "\n";
     f << "snapshot_avif_mode = "
       << (s.snapshot.avifMode == AvifHdrMode::GainMap ? "gainmap" : "pq")
+      << "\n";
+    f << "snapshot_png_hdr = " << (s.snapshot.pngHdr ? "true" : "false")
       << "\n";
     f << "auto_copy_capture = " << (s.autoCopyCapture ? "true" : "false")
       << "\n";

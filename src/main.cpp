@@ -108,7 +108,10 @@ std::vector<uint8_t> MakeToastThumbnail(const sundial::Frame& frame,
     // `small` is a Windows COM IDL typedef (rpcndr.h) - avoid that name.
     sundial::Frame thumb = sundial::Resize(frame, outW, outH);
     if (thumb.isHdr) {
-        return sundial::TonemapToBgra8(thumb, tonemap);
+        // The toast renders without color management: always sRGB.
+        sundial::TonemapParams srgb = tonemap;
+        srgb.outputGamut = sundial::OutputGamut::Srgb;
+        return sundial::TonemapToBgra8(thumb, srgb);
     }
     return std::move(thumb.pixels);
 }
@@ -134,7 +137,8 @@ void SpawnEditorForFrame(const sundial::Frame& frame,
 // applies. Snapshot = the implicit Save / capture target (a .png base path that
 // fans out into every enabled format). ExplicitFile = a single file the user
 // picked via Save As, written verbatim.
-enum class SaveMode { Snapshot, ExplicitFile };
+// ExplicitHdrPng = Save As with the "HDR PNG" filter: a single 16-bit PQ PNG.
+enum class SaveMode { Snapshot, ExplicitFile, ExplicitHdrPng };
 
 // `inChildProcess` is true when called from a short-lived editor process: the
 // save toast then runs on the calling thread (so the process stays alive to
@@ -165,7 +169,11 @@ void SaveAndNotify(const sundial::Frame& frame,
     const bool explicitAvif =
         frame.isHdr && _wcsicmp(ext.c_str(), L".avif") == 0;
 
-    if (mode == SaveMode::ExplicitFile && explicitUltraHdr) {
+    if (mode == SaveMode::ExplicitHdrPng && frame.isHdr) {
+        sundial::SavePngHdrPq(frame, tonemap, png.wstring());
+        selectInExplorer = png.wstring();
+        title = L"HDR PNG saved  -  " + png.filename().wstring();
+    } else if (mode == SaveMode::ExplicitFile && explicitUltraHdr) {
         sundial::SaveUltraHdrJpeg(frame, tonemap, png.wstring());
         selectInExplorer = png.wstring();
         title = L"Ultra HDR saved  -  " + png.filename().wstring();
@@ -173,7 +181,7 @@ void SaveAndNotify(const sundial::Frame& frame,
         sundial::SaveAvifHdr(frame, tonemap, png.wstring(), formats.avifMode);
         selectInExplorer = png.wstring();
         title = L"HDR AVIF saved  -  " + png.filename().wstring();
-    } else if (mode == SaveMode::ExplicitFile) {
+    } else if (mode != SaveMode::Snapshot) {
         // A single explicit PNG (SDR passthrough or tonemapped HDR).
         if (frame.isHdr) {
             sundial::SavePngTonemapped(frame, tonemap, png.wstring());
@@ -195,6 +203,9 @@ void SaveAndNotify(const sundial::Frame& frame,
         jpgFile.replace_extension(L".jpg");
         std::filesystem::path avifFile = pngFile;
         avifFile.replace_extension(L".avif");
+        // The HDR PNG shares the .png extension, so it gets a suffix.
+        std::filesystem::path hdrPngFile = pngFile;
+        hdrPngFile.replace_filename(pngFile.stem().wstring() + L"_hdr.png");
 
         std::vector<std::wstring> wrote;  // extensions written, for the title
         bool wrotePng = false;
@@ -227,6 +238,13 @@ void SaveAndNotify(const sundial::Frame& frame,
             }
         }
 #endif
+        if (formats.pngHdr && frame.isHdr) {
+            sundial::SavePngHdrPq(frame, tonemap, hdrPngFile.wstring());
+            wrote.push_back(L"_hdr.png");
+            if (selectInExplorer.empty()) {
+                selectInExplorer = hdrPngFile.wstring();
+            }
+        }
 #ifdef SUNDIAL_HAS_ULTRAHDR
         if (formats.ultraHdrJpeg && frame.isHdr) {
             sundial::SaveUltraHdrJpeg(frame, tonemap, jpgFile.wstring());
@@ -547,7 +565,9 @@ void EditExistingFile(sundial::AppSettings& settings,
     settings.hotkeyVk = result.updatedSettings.hotkeyVk;
     sundial::SaveSettings(settings);
     const SaveMode mode =
-        result.explicitPath ? SaveMode::ExplicitFile : SaveMode::Snapshot;
+        !result.explicitPath ? SaveMode::Snapshot
+        : result.explicitHdrPng ? SaveMode::ExplicitHdrPng
+                                : SaveMode::ExplicitFile;
     SaveAndNotify(result.editedFrame, settings.tonemap, settings.snapshot,
                   mode, result.outputPath, /*inChildProcess=*/true);
 }
@@ -594,7 +614,9 @@ void EditCapturedTemp(sundial::AppSettings& settings,
         sundial::CopyFrameToClipboard(result.editedFrame, settings.tonemap);
     }
     const SaveMode mode =
-        result.explicitPath ? SaveMode::ExplicitFile : SaveMode::Snapshot;
+        !result.explicitPath ? SaveMode::Snapshot
+        : result.explicitHdrPng ? SaveMode::ExplicitHdrPng
+                                : SaveMode::ExplicitFile;
     SaveAndNotify(result.editedFrame, settings.tonemap, settings.snapshot,
                   mode, result.outputPath, /*inChildProcess=*/true);
 }

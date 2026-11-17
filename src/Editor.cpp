@@ -509,7 +509,10 @@ void ApplyTonemapSource(EditorContext& ctx) {
 
 std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
                             const std::wstring& outputFolderOverride,
-                            bool allowUltraHdr) {
+                            bool allowUltraHdr, bool* hdrPng = nullptr) {
+    if (hdrPng) {
+        *hdrPng = false;
+    }
     std::filesystem::path defaultDir;
     std::wstring stem;
     if (!defaultPath.empty()) {
@@ -541,11 +544,13 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
     // For HDR sources, filter index 2 is Ultra HDR JPEG (an SDR JPEG with an
-    // embedded gain map) and index 3 is HDR AVIF; both are HDR-only.
+    // embedded gain map), 3 is HDR AVIF and 4 is a 16-bit PQ HDR PNG; all
+    // HDR-only.
     ofn.lpstrFilter =
         allowUltraHdr
             ? L"PNG image (*.png)\0*.png\0Ultra HDR JPEG (*.jpg)\0*.jpg\0"
-              L"HDR AVIF (*.avif)\0*.avif\0\0"
+              L"HDR AVIF (*.avif)\0*.avif\0"
+              L"HDR PNG, 16-bit PQ (*.png)\0*.png\0\0"
             : L"PNG image (*.png)\0*.png\0\0";
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = MAX_PATH;
@@ -570,6 +575,14 @@ std::wstring PickSaveAsPath(HWND owner, const std::wstring& defaultPath,
         std::wstring ext = chosen.extension().wstring();
         if (_wcsicmp(ext.c_str(), L".avif") != 0) {
             chosen.replace_extension(L".avif");
+        }
+    } else if (allowUltraHdr && ofn.nFilterIndex == 4) {
+        std::wstring ext = chosen.extension().wstring();
+        if (_wcsicmp(ext.c_str(), L".png") != 0) {
+            chosen.replace_extension(L".png");
+        }
+        if (hdrPng) {
+            *hdrPng = true;
         }
     }
     return chosen.wstring();
@@ -861,14 +874,16 @@ void DoSave(EditorContext& ctx) {
 // Open the Save As dialog. Returns true if the user picked a path (we're now
 // committed to saving + exiting); false if they canceled the dialog.
 bool DoSaveAs(EditorContext& ctx) {
+    bool hdrPng = false;
     std::wstring path =
         PickSaveAsPath(ctx.hwnd, ctx.defaultSavePath, ctx.outputFolder,
-                       ctx.source && ctx.source->isHdr);
+                       ctx.source && ctx.source->isHdr, &hdrPng);
     if (path.empty()) {
         return false;
     }
     ctx.result.outputPath = path;
     ctx.result.explicitPath = true;  // one explicit file, not the format set
+    ctx.result.explicitHdrPng = hdrPng;
     ctx.result.saved = true;
     ctx.exitRequested = true;
     return true;
@@ -1038,7 +1053,7 @@ void DrawSidebar(EditorContext& ctx) {
             ctx.params.curve = static_cast<TonemapCurve>(curve);
         }
         ImGui::SliderFloat("SDR white (nits)", &ctx.params.sdrWhiteNits,
-                           40.0f, 400.0f, "%.0f");
+                           kMinSdrWhiteNits, kMaxSdrWhiteNits, "%.0f");
         ImGui::SameLine();
         if (ImGui::SmallButton("Auto##sdrwhite")) {
             ctx.params.sdrWhiteNits = AutoSdrWhite(*ctx.source);
@@ -1100,8 +1115,8 @@ void DrawSidebar(EditorContext& ctx) {
         ImGui::SliderFloat("Local tonemap", &ctx.params.localStrength, 0.0f,
                            1.0f, "%.2f");
         ImGui::TextDisabled(
-            "Local: compress brightness per-region so dark UI keeps detail\n"
-            "in front of bright HDR content.");
+            "Local: compress brightness per-region (edge-aware) so dark UI\n"
+            "keeps detail next to bright HDR content.");
     }
     if (ImGui::CollapsingHeader("Output")) {
         static const char* kGammas[] = {"sRGB", "Gamma 2.2",
@@ -1110,6 +1125,17 @@ void DrawSidebar(EditorContext& ctx) {
         if (ImGui::Combo("Gamma", &gamma, kGammas,
                          IM_ARRAYSIZE(kGammas))) {
             ctx.params.outputGamma = static_cast<OutputGamma>(gamma);
+        }
+        static const char* kGamuts[] = {"sRGB", "Display P3"};
+        int gamut = static_cast<int>(ctx.params.outputGamut);
+        if (ImGui::Combo("Gamut", &gamut, kGamuts, IM_ARRAYSIZE(kGamuts))) {
+            ctx.params.outputGamut = static_cast<OutputGamut>(gamut);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Primaries of saved image files. Display P3 keeps wide-gamut\n"
+                "HDR colors and embeds a color profile. The preview, clipboard\n"
+                "and video are always sRGB.");
         }
     }
     if (ImGui::Button("Reset tonemap")) {
@@ -1992,14 +2018,17 @@ EditorResult RunEditor(const Frame& source, const AppSettings& settings,
                 ctx.result.saved = true;
                 ctx.exitRequested = true;
             } else if (ctrl && shift && x && !ctx.tonemapOnly) {
+                bool hdrPng = false;
                 std::wstring path = PickSaveAsPath(ctx.hwnd,
                                                    ctx.defaultSavePath,
                                                    ctx.outputFolder,
                                                    ctx.source &&
-                                                       ctx.source->isHdr);
+                                                       ctx.source->isHdr,
+                                                   &hdrPng);
                 if (!path.empty()) {
                     ctx.result.outputPath = path;
                     ctx.result.explicitPath = true;
+                    ctx.result.explicitHdrPng = hdrPng;
                     ctx.result.saved = true;
                     ctx.exitRequested = true;
                 }
