@@ -1,4 +1,4 @@
-# Unreleased
+# 1.5.0
 
 * **Better HDR-to-SDR color**: wide-gamut colors (HDR games, P3 video and
   photos) no longer shift hue. Saturated reds used to turn orange and greens
@@ -21,9 +21,6 @@
   content keeps its contrast, without halos.
 * **SDR white** goes up to 480 nits, matching the top of Windows' SDR
   content brightness slider; **Auto** now handles very bright displays.
-
-# 1.4.3
-
 * **Tooltips and hover states are captured** — like Snipping Tool, the screen
   is now grabbed the moment the capture hotkey is pressed, before Sundial's
   toolbar takes focus and dismisses transient UI. While you pick an area the
